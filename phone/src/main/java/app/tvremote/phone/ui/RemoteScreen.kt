@@ -38,6 +38,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
@@ -66,11 +67,15 @@ import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
@@ -235,7 +240,8 @@ private fun RemoteTab(ui: UiState, controller: TvController, onVoice: () -> Unit
         val width = maxWidth - 40.dp
         // The design's 276dp pad beside a 62dp volume rocker; narrower phones shrink the pad, not the keys.
         val pad = minOf(276.dp, width - ROCKER_WIDTH - PAD_GAP)
-        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(top = 8.dp, bottom = 16.dp)) {
+        // imePadding: the type box sits near the top, and the keyboard must not cover what's below it either.
+        Column(Modifier.fillMaxSize().imePadding().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(top = 8.dp, bottom = 16.dp)) {
             if (offline) {
                 OfflineCard(ui, controller, onSwitchTv)
                 Spacer(Modifier.height(20.dp))
@@ -248,6 +254,8 @@ private fun RemoteTab(ui: UiState, controller: TvController, onVoice: () -> Unit
                     )
                 }
                 QuickLaunch(ui, shortcuts, width, enabled = connected, onLaunch = controller::launch, onAllApps = onAllApps)
+                Spacer(Modifier.height(14.dp))
+                TypeBox(controller, enabled = connected)
                 Segmented(
                     listOf("D-pad", "Touchpad"),
                     selected = if (touchpad) 1 else 0,
@@ -288,6 +296,87 @@ private fun RemoteTab(ui: UiState, controller: TvController, onVoice: () -> Unit
                 IconKey(R.drawable.ic_fast_forward, "Fast forward", { key(Keys.MEDIA_FAST_FORWARD) }, Modifier.weight(1f).height(68.dp), repeat = true, enabled = connected)
             }
             if (connected && ui.volumeControl == false) VolumeNote()
+        }
+    }
+}
+
+/**
+ * Type on the TV from the Remote tab: tapping the box opens the phone's keyboard, and the TV's selected
+ * text box mirrors it as you type. Enter on the keyboard submits (searches) on the TV. Recent searches
+ * show as chips only while typing.
+ */
+@Composable
+private fun TypeBox(controller: TvController, enabled: Boolean) {
+    var text by rememberSaveable { mutableStateOf("") }
+    var focused by remember { mutableStateOf(false) }
+    val recent by controller.recentTexts.collectAsState()
+    val focusManager = LocalFocusManager.current
+
+    // The TV's text box mirrors this field. The protocol can't send empty text, so clearing deletes key by key.
+    fun update(new: String) {
+        val old = text
+        text = new
+        if (new.isEmpty()) repeat(old.length.coerceAtMost(64)) { controller.key(Keys.DEL) } else controller.text(new)
+    }
+
+    fun submit() {
+        controller.key(Keys.ENTER)
+        if (text.isNotBlank()) controller.rememberText(text)
+        focusManager.clearFocus()
+    }
+
+    Column(Modifier.fillMaxWidth()) {
+        Row(
+            Modifier.fillMaxWidth().height(52.dp).alpha(if (enabled) 1f else 0.5f)
+                .fieldBox(focused, radius = 26.dp).padding(start = 16.dp, end = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Ico(R.drawable.ic_keyboard, tint = Tok.Dim, size = 18.dp)
+            Spacer(Modifier.width(10.dp))
+            BasicTextField(
+                value = text,
+                onValueChange = ::update,
+                enabled = enabled,
+                singleLine = true,
+                textStyle = TextStyle(fontFamily = Grotesk, fontSize = 16.sp, color = Tok.Bone),
+                cursorBrush = SolidColor(Tok.Signal),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text, imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(onSearch = { submit() }),
+                decorationBox = { inner ->
+                    Box(contentAlignment = Alignment.CenterStart) {
+                        if (text.isEmpty()) Text("Type on TV", fontFamily = Grotesk, fontSize = 16.sp, color = Tok.Dim)
+                        inner()
+                    }
+                },
+                modifier = Modifier.weight(1f).onFocusChanged { focused = it.isFocused }
+                    .semantics { contentDescription = "Type on the TV" },
+            )
+            if (text.isNotEmpty()) HeaderButton(R.drawable.ic_x, "Clear") { update("") }
+        }
+        if (focused) {
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "Select a search box on the TV first. Letters appear there as you type.",
+                style = MaterialTheme.typography.bodySmall,
+                color = Tok.Dim,
+            )
+            if (recent.isNotEmpty()) {
+                Spacer(Modifier.height(8.dp))
+                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    recent.forEach { t ->
+                        Row(
+                            Modifier.height(36.dp).clip(RoundedCornerShape(18.dp)).border(1.dp, Tok.Seam, RoundedCornerShape(18.dp))
+                                .clickable(enabled = enabled, role = Role.Button, onClickLabel = "Type $t on the TV") { update(t) }
+                                .padding(horizontal = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Ico(R.drawable.ic_clock, tint = Tok.Dim, size = 14.dp)
+                            Spacer(Modifier.width(6.dp))
+                            Text(t, style = MaterialTheme.typography.bodyMedium, color = Tok.Bone, maxLines = 1)
+                        }
+                    }
+                }
+            }
         }
     }
 }

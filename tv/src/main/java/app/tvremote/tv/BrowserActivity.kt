@@ -64,11 +64,14 @@ class BrowserActivity : Activity(), Tab.Owner, ControlHandler, BrowserChrome.Act
     private lateinit var historyStore: History
     private lateinit var root: FrameLayout
     private lateinit var injector: PointerInjector
-    private lateinit var pins: PinStore
+    private lateinit var phones: PhoneStore
 
     private var server: ControlServer? = null
     private var phoneConnected = false
     private var showInfo = false
+
+    /** Code shown while a phone is pairing, else null. */
+    private var pairingCode: String? = null
     private var drmSummary = "checking Widevine…"
     private var customViewCallback: WebChromeClient.CustomViewCallback? = null
     private var customView: View? = null
@@ -105,7 +108,7 @@ class BrowserActivity : Activity(), Tab.Owner, ControlHandler, BrowserChrome.Act
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        pins = PinStore(this)
+        phones = PhoneStore(this)
         bookmarkStore = Bookmarks(this)
         historyStore = History(this)
         injector = PointerInjector(this)
@@ -179,8 +182,9 @@ class BrowserActivity : Activity(), Tab.Owner, ControlHandler, BrowserChrome.Act
 
     private fun startServer() {
         server?.close()
-        val s = ControlServer(PORT, { pins.pin }, android.os.Build.MODEL ?: "TV", this)
         try {
+            val id = TvIdentity.load()
+            val s = ControlServer(PORT, phones, android.os.Build.MODEL ?: "TV", id.ssl, id.fingerprint, this)
             s.start()
             server = s
         } catch (e: BindException) {
@@ -235,10 +239,11 @@ class BrowserActivity : Activity(), Tab.Owner, ControlHandler, BrowserChrome.Act
         val ip = Net.localAddress()
         val t = tabs.getOrNull(current)
         val phone = when {
-            showInfo -> "$drmSummary · PIN ${pins.pin}"
+            pairingCode != null -> "Pairing code $pairingCode"
+            showInfo -> "$drmSummary · ${phones.count()} paired"
             server == null -> "Phone control off"
             phoneConnected -> "Phone cursor on"
-            else -> "PIN ${pins.pin} · ${ip ?: "no network"}"
+            else -> "Phone control · ${ip ?: "no network"}"
         }
         val url = t?.displayUrl.orEmpty()
         chrome.bind(
@@ -538,6 +543,14 @@ class BrowserActivity : Activity(), Tab.Owner, ControlHandler, BrowserChrome.Act
 
     override fun onCommand(command: Command) {
         ui.post { run(command) }
+    }
+
+    override fun onPairingCode(code: String?) {
+        ui.post {
+            pairingCode = code
+            if (code != null) toast("Pairing code $code. Type it on your phone.")
+            refreshInfo()
+        }
     }
 
     private fun run(c: Command) {

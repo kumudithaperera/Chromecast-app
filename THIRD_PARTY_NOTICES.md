@@ -61,6 +61,8 @@ project. It is used only until the first download succeeds.
 | Android TV Remote v2 protocol, including the pairing ("polo") messages from AOSP's google-tv-pairing-protocol | Apache-2.0 (AOSP) | The message layout is implemented from the specification, in `phone/.../atv/Pairing.kt` and `Remote.kt`. The protobuf encoder in `phone/.../proto/Proto.kt` is hand-written. |
 | [androidtvremote2](https://github.com/tronikos/androidtvremote2) (Python, by tronikos) | Apache-2.0 | Used as a behavioral reference: the shape of the client certificate and the pairing-secret formula. The unit tests check the pairing hash against its formula. The code is a Kotlin reimplementation, not a line-by-line port. |
 
+| Bluetooth Core Specification, LE Secure Connections passkey entry (Vol 3, Part H, 2.3.5.6.3) | Bluetooth SIG specification | Design reference for the TV browser's first pairing (bit-by-bit code check). Implemented with HMAC-SHA256 in `protocol/.../Auth.kt` (`Passkey`); no code copied. |
+
 ## 5. Projects studied for ideas only
 
 These were read during research. No code from them is in this repository.
@@ -75,6 +77,6 @@ These were read during research. No code from them is in this repository.
 
 ## 6. Note on the app's own license
 
-The license for this project's own code is stated in `LICENSE` (when present).
-Nothing in sections 1 to 5 changes that, except that the apps must keep the
-notices above when distributed.
+This project's own code is licensed under Apache-2.0 (see `LICENSE`). The
+third-party components in sections 1 to 3 keep their own licenses, and the apps
+must keep the notices above when distributed.

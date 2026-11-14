@@ -107,13 +107,13 @@ Status: phone remote built (untested on a TV). TV browser + phone trackpad proto
 - Code: `tv/` (Android TV app, plain Views, ~950 KB APK), `protocol/` (shared JVM module: wire format, auth, server, client, URL rules, blocklist), trackpad screen in `phone/` (menu ▸ TV browser).
 - Build: `./gradlew :tv:assembleDebug :phone:assembleDebug`. Install the TV app on the Chromecast with `adb install -r tv/build/outputs/apk/debug/tv-debug.apk`. Launch: `adb shell am start -n app.tvremote.tv/.BrowserActivity`.
 - How it works: the TV app runs a WebView with an on-screen pointer and listens on TCP 8765 while it is on screen. The phone sends cursor moves, taps, two-finger scroll, typed text and navigation. The phone app's "Open the browser on the TV" button starts it through the existing remote link (`tvbrowser://home`). Any web link shared to the TV also opens in it, since it registers for http/https.
-- Pairing: 6-digit PIN shown top right on the TV (Menu key toggles it while connected). Challenge-response, 5 wrong tries lock for 30 s, doubling. Traffic is not encrypted (see `security-reports/tv-browser-preflight.md`, local only).
+- Pairing: 6-digit PIN shown top right on the TV (Menu key toggles it while connected). Challenge-response, 5 wrong tries lock for 30 s, doubling. Traffic was not encrypted in this first version; fixed 11/15, see "TLS on the browser link" below.
 - Browser policy: popups without a click blocked, automatic cross-site redirects blocked (phone shows "Blocked X, tap to allow"), only http/https load, seed ad-host blocklist (`tv/src/main/assets/blocklist.txt`), desktop user agent on by default, up to 5 tabs.
 - TV D-pad also works: arrows move the pointer, OK clicks, Back goes back.
 - Tests: `protocol` 22 and `phone` 19 JVM tests pass (gesture feel, wire format, auth, lockout, oversized input, real sockets). Live run on a Samsung SCG22 (Android 16, Widevine L1): 24 of 24 checks pass over the real protocol (hover, click, typing, scroll, popups, redirects, blocked schemes, ad host, desktop toggle, lockout).
 - Chromecast results (11/10): reports Widevine L1; all protocol checks pass there, including hover, click, typing, scroll, popups, redirects, blocked schemes, ad host, desktop toggle, lockout and Enter-submits-form. One real bug found only on Google TV: the raw Backspace key emptied the whole field (the Android TV emulator did the same). Backspace is now a scripted one-character delete with the key as fallback.
 - Not verified: a real phone-app-to-TV session with finger gestures (the two apps ran separately), cursor feel by hand, actual DRM video playback (only the Widevine level and the start-page capability check), page speed on heavy sites, downloads, file uploads.
-- Known limits: no encryption, global lockout, seed blocklist only, a click-initiated popup still opens a tab, the layout assumes a landscape TV.
+- Known limits: no encryption (fixed 11/15), global lockout, seed blocklist only, a click-initiated popup still opens a tab, the layout assumes a landscape TV.
 
 ## Phone-side video controls, speed menu, scroll strip (built 11/10)
 
@@ -211,6 +211,28 @@ Implements the "(revamp)" frames on the Doop canvas (placed above each original)
 - Checked on the SCG22 phone: each built screen compared against its frame; 24/24 browser checks and 9/9 new-feature checks (Reader, ad count 5/5 loads, bookmarks, pointer clicks on the toolbar) pass. Pairing with a real TV and "On TV now" were not checked (no TV on hand).
 - Known limit: the TV toolbar is sized for a 960dp-wide TV; on a narrow portrait screen the PIN pill crowds out the address field.
 
+## TLS on the browser link (built and tested 11/15)
+
+- Why: the browser link (TCP 8765) was plain text, so typed passwords and URLs were readable by anyone on the same Wi-Fi. Findings 13 and 14 in the preflight.
+- What changed: `protocol/.../Tls.kt` (`PinnedTrust`, fingerprint helper), `Auth.kt` (proofs now cover role, nonce and the certificate fingerprint), `ControlServer.kt` (TLS 1.2/1.3 only, no plaintext mode; `OK <name> <tvproof>`), `ControlClient.kt` (pins the certificate, verifies the TV's proof, new failures `IdentityChanged`, `SecureFailed`, `Untrusted`). TV: `TvIdentity.kt` makes an EC key plus self-signed certificate in the Android Keystore. Phone: `BrowserLink`/`Prefs` remember the fingerprint per TV after the first successful pairing; `BrowserScreen` shows a warning if it changes.
+- Decisions: no plaintext fallback (a downgrade path would defeat the point), so an old TV app and a new phone app can't talk; the phone says to update the TV app. A failed TLS handshake does not count towards the PIN lockout. The TV never sends a PIN-derived value before the phone has proved itself, so asking the TV for one is not an offline-guessing route.
+- Bug found only on the real Chromecast: the Keystore key rejected every handshake (`INCOMPATIBLE_DIGEST`) because Android's TLS stack signs with the raw "no digest" mode. Fixed by allowing `DIGEST_NONE` on the key. JVM tests could not show this because they don't use the Keystore.
+- Tests: `protocol` 48 and `phone` 33 pass; 7 new link tests (nothing in clear text, plaintext client gets no challenge, failed handshakes don't lock, pinned reconnect, different certificate refused before any PIN is sent, TV that can't prove the PIN rejected, plaintext TV refused by the phone). Lint: 0 errors in both apps.
+- Checked on the real Chromecast (Android 14), from the Mac over Wi-Fi: TLS 1.3, same certificate on every connection, correct PIN accepted with the TV's proof verified, wrong PIN refused, proof made for another certificate refused, plaintext client gets nothing. The app's own Kotlin client was also run against it (first pairing, pinned reconnect, wrong certificate gives `IdentityChanged`, wrong PIN gives `WrongPin`).
+- Not checked: the phone app's screens for this (the PIN screen with the identity-changed warning, the "update the TV app" message). Both apps were installed on the SCG22 and the Chromecast, but the phone UI was not driven.
+- Remaining weakness at this point: the first pairing trusted whatever certificate the TV showed, and a device intercepting it could brute-force the 6-digit PIN from the proof. Fixed the same day, see next section.
+
+## Pairing codes instead of a PIN (built and tested 11/15)
+
+- Why: any proof built from a 6-digit PIN can be brute-forced offline in milliseconds by whoever receives it, so a device in the middle of the first connection could learn the PIN. A full PAKE (SPAKE2) needs elliptic-curve maths the TV app doesn't have without a big dependency.
+- What: Bluetooth LE Secure Connections passkey entry. The TV shows a fresh 6-digit code per attempt; phone and TV check its 20 bits one at a time (phone commits, TV commits, phone opens, TV opens), each commitment an HMAC keyed by a random nonce over role, round, the certificate fingerprint that side sees, and the bit. A side without the code is caught at its first wrong guess having learnt one bit, and the next attempt has a new code. Success then hands the phone a random 256-bit key (`PAIRED <name> <id> <key>`); reconnections prove that key both ways (`AUTH <id> <hmac>`), bound to the certificate. The phone stores id, key and fingerprint (`Credential`).
+- Code: `protocol/.../Auth.kt` (`Credential`, `PairedPhones`, `Auth`, `Passkey`), `ControlServer.pair()`, `ControlClient.pair()`, new failures `NotPaired`, `Busy`. TV: `PhoneStore.kt` replaces `PinStore.kt` (up to 8 phones, oldest dropped; removes the old PIN); the status pill shows "Pairing code 123456" while a phone pairs, plus a toast. Phone: `Prefs.browserCredential`, `BrowserLink` connects first and asks for the code when the TV shows it; a wrong code starts a new attempt automatically (the TV shows the next code); an identity change pairs again with a notice.
+- Decisions: one pairing at a time (`ERR busy`), so nothing can swap the code on screen mid-attempt; abandoned or timed-out attempts count towards the lockout; a pairing that times out on the phone isn't retried unasked for the same reason.
+- Tests: `protocol` 55 (25 link tests). New: pairing with the code on screen, reconnect with key and no code, wrong and non-numeric codes, fresh code per attempt, lockout, one pairing at a time, abandoned attempt clears the code, unknown key, a relay in the middle with its own certificate forwarding every byte while the person types the right code (fails, TV issues no key), an impostor TV without the code (phone reports `Untrusted`), plus primitive tests. Checked the relay test is real: with the fingerprint removed from the commitments it fails (the relay pairs). `phone` 33 pass and lint 0 errors, checked on a copy of the tree because the working tree also holds unfinished video-volume work (`prefs.videoVolume` missing) that doesn't compile yet.
+- Checked on the real Chromecast from the Mac (Python client, code read from the TV screen with uiautomator): pairing succeeded, key reconnect with the TV's proof verified, wrong key refused, wrong code refused at bit 0, code removed from the screen afterwards. One test pairing from the Mac is now in the TV's list; its key existed only in that script.
+- Not checked: the phone app's own pairing screens on a device (the phone build in the working tree doesn't compile until the video-volume change is finished, so the new phone APK was not installed).
+- Still open: no on-TV way to remove paired phones except clearing the app's storage.
+
 ## Next steps
 
 - [x] Confirm phone platform (Android or iPhone). Android.
@@ -219,7 +241,8 @@ Implements the "(revamp)" frames on the Doop canvas (placed above each original)
 - [ ] Play a DRM stream in the TV browser (start page ▸ DRM test streams) and judge speed.
 - [x] TV app installed on the Chromecast over wireless debugging (11/10).
 - [ ] Pair the phone app with the Chromecast and judge the pointer feel; tune `BASE_GAIN`, `MAX_BOOST` in `TrackpadTracker.kt`.
-- [ ] Decide on TLS for the control channel.
+- [x] TLS for the control channel and safe first pairing (done 11/15).
+- [ ] A "Forget paired phones" option on the TV.
 - [ ] Scope and build the first version.
 
 ## Conversation log

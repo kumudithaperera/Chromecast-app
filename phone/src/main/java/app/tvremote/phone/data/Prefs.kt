@@ -1,6 +1,7 @@
 package app.tvremote.phone.data
 
 import android.content.Context
+import app.tvremote.protocol.Credential
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -41,12 +42,21 @@ class Prefs(context: Context) {
 
     fun setConnected(host: String, value: Boolean) = sp.edit().putBoolean("ok_$host", value).apply()
 
-    /** PIN shown on the TV browser, remembered per TV. */
-    fun browserPin(host: String): String? = sp.getString("bpin_$host", null)
+    /** Key and certificate from pairing with the TV browser, per TV. */
+    fun browserCredential(host: String): Credential? = Credential.decode(sp.getString("bcred_$host", null))
 
-    fun setBrowserPin(host: String, pin: String) = sp.edit().putString("bpin_$host", pin).apply()
+    fun setBrowserCredential(host: String, credential: Credential) =
+        sp.edit().putString("bcred_$host", credential.encode()).remove("bpin_$host").remove("bfp_$host").apply()
 
-    fun clearBrowserPin(host: String) = sp.edit().remove("bpin_$host").apply()
+    fun clearBrowserCredential(host: String) = sp.edit().remove("bcred_$host").apply()
+
+    /**
+     * What the Video tab's volume keys change: true for the video's own volume, false for the TV's
+     * (over HDMI-CEC), null until the person picks (then the Chromecast's own report decides).
+     */
+    var videoVolume: Boolean?
+        get() = if (sp.contains("video_volume")) sp.getBoolean("video_volume", false) else null
+        set(value) = sp.edit().apply { if (value == null) remove("video_volume") else putBoolean("video_volume", value) }.apply()
 
     /** Trackpad speed multiplier, 0.5 to 2.0. */
     var trackpadSpeed: Float
