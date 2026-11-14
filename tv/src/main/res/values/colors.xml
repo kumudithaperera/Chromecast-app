@@ -1,0 +1,12 @@
+<resources>
+    <!-- Canvas palette: "1970s pocket calculator" (Doop design brief). -->
+    <color name="ground">#121211</color>
+    <color name="panel">#1C1C1A</color>
+    <color name="key">#2C2B29</color>
+    <color name="seam">#3B3A37</color>
+    <color name="bone">#EDEAE2</color>
+    <color name="dim">#A5A29A</color>
+    <color name="signal">#F4BE1D</color>
+    <color name="ok">#7CC27F</color>
+    <color name="fault">#F0705A</color>
+</resources>

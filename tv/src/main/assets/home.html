@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Home</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400&family=Schibsted+Grotesk:wght@400;600;700&display=swap" rel="stylesheet">
+<style>
+  /* Palette from the Doop design brief: moulded plastic, printed legend, one yellow key. */
+  :root { --ground:#121211; --panel:#1C1C1A; --key:#2C2B29; --seam:#3B3A37; --bone:#EDEAE2; --dim:#A5A29A; --signal:#F4BE1D; --ok:#7CC27F; --fault:#F0705A; color-scheme: dark; }
+  * { margin: 0; box-sizing: border-box; }
+  body { padding: 28px 36px 48px; background: var(--ground); color: var(--bone); font: 400 15px/1.4 'Schibsted Grotesk', system-ui, sans-serif; }
+  h1 { font-size: 30px; font-weight: 700; letter-spacing: -.01em; }
+  p.sub { margin: 6px 0 26px; color: var(--dim); }
+  h2 { margin: 30px 0 12px; font-size: 13px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--dim); }
+  .grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+  a.tile { min-width: 0; display: flex; flex-direction: column; justify-content: flex-end; gap: 4px; height: 92px; padding: 16px; border-radius: 12px; background: var(--panel); color: inherit; text-decoration: none; outline: 3px solid transparent; outline-offset: 2px; transition: transform .12s; }
+  a.tile:hover { outline-color: var(--signal); transform: scale(1.03); }
+  a.tile b { font-size: 18px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .mono { font: 400 12px 'DM Mono', ui-monospace, monospace; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  p.none { color: var(--dim); }
+  button { font: 600 15px 'Schibsted Grotesk', system-ui, sans-serif; color: var(--ground); background: var(--signal); border: 0; border-radius: 22px; padding: 11px 22px; outline: 3px solid transparent; outline-offset: 2px; }
+  button:hover { outline-color: var(--bone); }
+  table { border-collapse: collapse; margin-top: 14px; }
+  td { padding: 5px 24px 5px 0; font-size: 15px; }
+  .yes { color: var(--ok); } .no { color: var(--fault); }
+  td.note { color: var(--dim); }
+  a.x { margin-left: auto; flex: none; width: 30px; height: 30px; line-height: 28px; text-align: center; border-radius: 50%; color: var(--dim); text-decoration: none; font-size: 20px; outline: 3px solid transparent; }
+  a.x:hover { color: var(--bone); outline-color: var(--fault); }
+  /* History */
+  ul.hist { list-style: none; padding: 0; }
+  ul.hist:not(.open) li.more { display: none; }
+  li.row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+  a.page { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; padding: 9px 16px; border-radius: 10px; background: var(--panel); color: inherit; text-decoration: none; outline: 3px solid transparent; outline-offset: 2px; }
+  a.page:hover { outline-color: var(--signal); }
+  a.page b { font-size: 16px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  button.quiet { margin-top: 6px; color: var(--bone); background: var(--key); }
+  a.link { color: var(--dim); text-decoration: none; outline: 3px solid transparent; outline-offset: 3px; border-radius: 6px; }
+  a.link:hover { color: var(--bone); outline-color: var(--signal); }
+  a.link.armed { color: var(--fault); }
+  pre { margin-top: 10px; color: var(--dim); font: 12px/1.5 'DM Mono', ui-monospace, monospace; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<h1>TV Browser</h1>
+<p class="sub">Move the pointer with your phone's trackpad. Tap to click, drag with two fingers to scroll.</p>
+
+<h2>Start</h2>
+<div class="grid">
+  <a class="tile" href="https://www.youtube.com"><b>YouTube</b><span class="mono">youtube.com</span></a>
+  <a class="tile" href="https://tubitv.com"><b>Tubi</b><span class="mono">tubitv.com</span></a>
+  <a class="tile" href="https://pluto.tv"><b>Pluto TV</b><span class="mono">pluto.tv</span></a>
+  <a class="tile" href="https://app.plex.tv"><b>Plex</b><span class="mono">app.plex.tv</span></a>
+  <a class="tile" href="https://duckduckgo.com"><b>Search</b><span class="mono">duckduckgo.com</span></a>
+  <a class="tile" href="https://en.wikipedia.org"><b>Wikipedia</b><span class="mono">wikipedia.org</span></a>
+  <a class="tile" href="https://shaka-player-demo.appspot.com/demo/"><b>DRM test streams</b><span class="mono">shaka-player-demo</span></a>
+  <a class="tile" href="https://www.google.com/search?q=what+is+my+user+agent"><b>User agent</b><span class="mono">what sites see</span></a>
+</div>
+
+<h2>Saved</h2>
+<!--BOOKMARKS-->
+
+<h2>History</h2>
+<div id="hist"><!--HISTORY--></div>
+<p style="margin-top:12px"><a id="hclear" class="link" href="https://tvbrowser.invalid/x/hclear">Clear history</a></p>
+
+<h2>This TV</h2>
+<button id="probe">Run capability check</button>
+<table id="out"></table>
+<pre id="env"></pre>
+
+<script>
+// History is replaced from the app without reloading this page, so clicks are handled here
+// for the whole document instead of on elements that may be swapped out.
+document.addEventListener('click', function (e) {
+  var t = e.target;
+  if (!t.closest) return;
+  var more = t.closest('[data-more]');
+  if (more) {
+    var list = more.previousElementSibling;
+    var open = list.classList.toggle('open');
+    more.textContent = open ? 'Show fewer' : more.getAttribute('data-label');
+    return;
+  }
+  var clr = t.closest('#hclear');
+  if (clr) {
+    if (!clr.classList.contains('armed')) {
+      e.preventDefault();
+      clr.classList.add('armed');
+      clr.textContent = 'Click again to clear all history';
+      setTimeout(function () { clr.classList.remove('armed'); clr.textContent = 'Clear history'; }, 4000);
+    } else {
+      clr.classList.remove('armed');
+      clr.textContent = 'Clear history';
+    }
+  }
+});
+(function () {
+  var out = document.getElementById('out');
+  function row(label, ok, note) {
+    var tr = document.createElement('tr');
+    tr.innerHTML = '<td></td><td class="' + (ok ? 'yes' : 'no') + '">' + (ok ? 'yes' : 'no') + '</td><td class="note"></td>';
+    tr.children[0].textContent = label;
+    tr.children[2].textContent = note || '';
+    out.appendChild(tr);
+  }
+  async function eme(label, robustness) {
+    try {
+      await navigator.requestMediaKeySystemAccess('com.widevine.alpha', [{
+        initDataTypes: ['cenc'],
+        videoCapabilities: [{ contentType: 'video/mp4;codecs="avc1.4d401f"', robustness: robustness }],
+        audioCapabilities: [{ contentType: 'audio/mp4;codecs="mp4a.40.2"', robustness: robustness }]
+      }]);
+      row(label, true);
+    } catch (e) { row(label, false, String(e.name || e)); }
+  }
+  document.getElementById('probe').addEventListener('click', async function () {
+    out.innerHTML = '';
+    document.getElementById('env').textContent =
+      'Secure context: ' + window.isSecureContext + '\n' +
+      'Viewport: ' + innerWidth + ' x ' + innerHeight + ' @ ' + devicePixelRatio + 'x\n' +
+      navigator.userAgent;
+    if (!navigator.requestMediaKeySystemAccess) { row('Encrypted media (EME)', false, 'not available here'); return; }
+    await eme('Widevine, software (L3)', 'SW_SECURE_CRYPTO');
+    await eme('Widevine, hardware (L1)', 'HW_SECURE_ALL');
+    var mse = window.MediaSource;
+    [['H.264', 'video/mp4; codecs="avc1.640028"'], ['HEVC', 'video/mp4; codecs="hvc1.1.6.L120.90"'],
+     ['VP9', 'video/webm; codecs="vp9"'], ['AV1', 'video/mp4; codecs="av01.0.08M.08"']].forEach(function (c) {
+      row(c[0] + ' via MSE', !!(mse && mse.isTypeSupported(c[1])));
+    });
+    row('HLS in the video tag', !!document.createElement('video').canPlayType('application/vnd.apple.mpegurl'));
+  });
+})();
+</script>
+</body>
+</html>

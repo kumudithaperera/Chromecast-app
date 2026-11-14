@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="ic_launcher_background">#1E2A3A</color>
+    <!-- Canvas palette, for the home-screen widget (Compose screens use Theme.kt). -->
+    <color name="widget_ground">#121211</color>
+    <color name="widget_panel">#1C1C1A</color>
+    <color name="widget_key">#2C2B29</color>
+    <color name="widget_seam">#3B3A37</color>
+    <color name="widget_bone">#EDEAE2</color>
+    <color name="widget_dim">#A5A29A</color>
+    <color name="widget_signal">#F4BE1D</color>
+    <color name="widget_on_signal_dim">#4A3A08</color>
+    <color name="widget_ok">#7CC27F</color>
+    <color name="widget_fault">#F0705A</color>
+</resources>

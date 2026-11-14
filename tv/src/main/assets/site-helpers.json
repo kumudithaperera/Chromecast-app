@@ -1,0 +1,17 @@
+{
+  "_note": "Built-in site helpers. Each rule clicks buttons matching its selectors on the listed sites (\"*\" means every site). Cookie rules only ever press reject or decline. Selectors are best guesses from each banner maker's public markup; sites change them, so some will stop matching.",
+  "rules": [
+    { "name": "OneTrust cookie banner", "sites": ["*"], "click": ["#onetrust-reject-all-handler"] },
+    { "name": "Cookiebot cookie banner", "sites": ["*"], "click": ["#CybotCookiebotDialogBodyButtonDecline", "#CybotCookiebotDialogBodyLevelButtonLevelOptinDeclineAll"] },
+    { "name": "Didomi cookie banner", "sites": ["*"], "click": ["#didomi-notice-disagree-button"] },
+    { "name": "CookieYes cookie banner", "sites": ["*"], "click": [".cky-btn-reject"] },
+    { "name": "Complianz cookie banner", "sites": ["*"], "click": [".cmplz-btn.cmplz-deny"] },
+    { "name": "Osano cookie banner", "sites": ["*"], "click": [".osano-cm-denyAll"] },
+    { "name": "iubenda cookie banner", "sites": ["*"], "click": [".iubenda-cs-reject-btn"] },
+    { "name": "Google and YouTube consent page", "sites": ["consent.youtube.com", "consent.google.com"], "clickText": ["Reject all"] },
+    { "name": "YouTube skip ad", "sites": ["youtube.com"], "click": [".ytp-skip-ad-button", ".ytp-ad-skip-button-modern", ".ytp-ad-skip-button"] },
+    { "name": "Netflix skip intro and recap", "sites": ["netflix.com"], "click": ["[data-uia='player-skip-intro']", "[data-uia='player-skip-recap']"] },
+    { "name": "Prime Video skip intro", "sites": ["primevideo.com", "amazon.com", "amazon.co.uk"], "click": [".atvwebplayersdk-skipelement-button"] },
+    { "name": "Disney+ skip intro", "sites": ["disneyplus.com"], "click": [".skip__button"] }
+  ]
+}

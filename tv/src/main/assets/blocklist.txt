@@ -1,0 +1,21 @@
+# Starter list of ad and popup networks. One domain per line; subdomains match too.
+# This is a seed to prove the mechanism. Swap in a maintained hosts list before relying on it.
+doubleclick.net
+googlesyndication.com
+googleadservices.com
+adservice.google.com
+adnxs.com
+taboola.com
+outbrain.com
+popads.net
+popcash.net
+propellerads.com
+adsterra.com
+exoclick.com
+trafficjunky.com
+juicyads.com
+adcash.com
+clickadu.com
+hilltopads.net
+richpush.co
+pushwhy.com
