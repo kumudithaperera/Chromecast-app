@@ -149,7 +149,9 @@ class TvController(context: Context) {
             var failures = 0
             var retriedAuth = false
             while (isActive) {
-                setConnection(Connection.Connecting)
+                // A fresh connection gets a fresh volume report: the person may have switched the
+                // Chromecast's volume control on or off since the last one.
+                _state.update { it.copy(connection = Connection.Connecting, volumeControl = null, volume = null) }
                 val s = RemoteSession(tv.host, identity.await(), prefs.pin(tv.host), listenerFor(tv))
                 session = s
                 try {

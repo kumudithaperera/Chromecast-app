@@ -114,6 +114,8 @@ fun AppRoot(controller: TvController, discovery: TvDiscovery, browser: BrowserLi
                         onOpenBrowserOnTv = { controller.launch("tvbrowser://home") },
                         onTvKey = controller::key,
                         tvKeysEnabled = ui.connection is Connection.Connected,
+                        // The remote is up and the Chromecast hasn't said it drops volume keys (HDMI-CEC volume off).
+                        tvVolume = ui.connection is Connection.Connected && ui.volumeControl != false,
                         onBack = onBack,
                     )
                 },

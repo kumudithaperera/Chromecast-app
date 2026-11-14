@@ -38,7 +38,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
@@ -52,7 +51,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -62,8 +60,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.graphics.PathEffect
@@ -75,7 +71,6 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
-import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
@@ -89,16 +84,20 @@ import app.tvremote.phone.data.TvController
 import app.tvremote.phone.data.UiState
 import kotlinx.coroutines.delay
 
-private val TABS = listOf(
-    NavTab("Remote", R.drawable.ic_tv),
-    NavTab("Type", R.drawable.ic_keyboard),
-    NavTab("Apps", R.drawable.ic_layout_grid),
-    NavTab("Browser", R.drawable.ic_globe),
-    NavTab("Notes", R.drawable.ic_sticky_note),
-)
+private enum class Tab(val nav: NavTab) {
+    REMOTE(NavTab("Remote", R.drawable.ic_tv)),
+    APPS(NavTab("Apps", R.drawable.ic_layout_grid)),
+    BROWSER(NavTab("Browser", R.drawable.ic_globe)),
+    NOTES(NavTab("Notes", R.drawable.ic_sticky_note)),
+}
+
+/** The Apps tab (and the Remote tab's All apps key) is hidden for now. Its code stays; set true to bring it back. */
+private const val SHOW_APPS = false
+
+private val TABS = Tab.entries.filter { it != Tab.APPS || SHOW_APPS }
 
 /**
- * The phone remote from the "Phone remote (built)" page: Remote, Type and Apps, plus the TV browser's
+ * The phone remote from the "Phone remote (built)" page: Remote and Apps, plus the TV browser's
  * trackpad and the watch notes. The last two bring their own header; [browser] gets a way back to the Remote tab.
  */
 @Composable
@@ -110,7 +109,9 @@ fun RemoteScreen(
     browser: @Composable (onBack: () -> Unit) -> Unit,
     notes: @Composable () -> Unit,
 ) {
-    var tab by rememberSaveable { mutableIntStateOf(0) }
+    var tabName by rememberSaveable { mutableStateOf(Tab.REMOTE.name) }
+    val tab = TABS.firstOrNull { it.name == tabName } ?: Tab.REMOTE
+    fun go(t: Tab) { tabName = t.name }
     var menuOpen by remember { mutableStateOf(false) }
     var forgetting by remember { mutableStateOf(false) }
     var editingApps by rememberSaveable { mutableStateOf(false) }
@@ -118,12 +119,12 @@ fun RemoteScreen(
     val connected = ui.connection is Connection.Connected
     // The tab bar steps aside for the keyboard, so a tab's content gets the whole space above it.
     val keyboardOpen = WindowInsets.ime.getBottom(LocalDensity.current) > 0
-    LaunchedEffect(tab) { if (tab != 2) editingApps = false }
-    BackHandler(enabled = tab != 0 || editingApps) { if (editingApps) editingApps = false else tab = 0 }
+    LaunchedEffect(tab) { if (tab != Tab.APPS) editingApps = false }
+    BackHandler(enabled = tab != Tab.REMOTE || editingApps) { if (editingApps) editingApps = false else go(Tab.REMOTE) }
 
     Column(Modifier.fillMaxSize().background(Tok.Ground).statusBarsPadding()) {
         when (tab) {
-            0 -> RemoteHeader(
+            Tab.REMOTE -> RemoteHeader(
                 tvName = tvName,
                 status = statusLine(ui),
                 lamp = lampFor(ui.connection),
@@ -145,8 +146,7 @@ fun RemoteScreen(
                     )
                 }
             }
-            1 -> Header("Type on TV", contextLine(ui), lampFor(ui.connection))
-            2 -> Header("Apps", if (connected) "Opens on $tvName" else statusLine(ui), lampFor(ui.connection)) {
+            Tab.APPS -> Header("Apps", if (connected) "Opens on $tvName" else statusLine(ui), lampFor(ui.connection)) {
                 Box(
                     Modifier.padding(end = 4.dp).height(40.dp).clip(RoundedCornerShape(20.dp))
                         .border(1.dp, Tok.Seam, RoundedCornerShape(20.dp))
@@ -161,14 +161,13 @@ fun RemoteScreen(
         val content = if (keyboardOpen) Modifier else Modifier.consumeWindowInsets(WindowInsets.navigationBars)
         Box(Modifier.weight(1f).fillMaxWidth().then(content)) {
             when (tab) {
-                0 -> RemoteTab(ui, controller, onVoice = onVoice, onSwitchTv = onSwitchTv, onAllApps = { tab = 2 })
-                1 -> TypeTab(ui, controller, onVoice)
-                2 -> AppsTab(ui, controller, editing = editingApps, onType = { tab = 1 })
-                3 -> browser { tab = 0 }
-                else -> notes()
+                Tab.REMOTE -> RemoteTab(ui, controller, onVoice = onVoice, onSwitchTv = onSwitchTv, onAllApps = if (SHOW_APPS) ({ go(Tab.APPS) }) else null)
+                Tab.APPS -> AppsTab(ui, controller, editing = editingApps)
+                Tab.BROWSER -> browser { go(Tab.REMOTE) }
+                Tab.NOTES -> notes()
             }
         }
-        if (!keyboardOpen) BottomNav(TABS, tab) { tab = it }
+        if (!keyboardOpen) BottomNav(TABS.map { it.nav }, TABS.indexOf(tab)) { go(TABS[it]) }
     }
 
     if (forgetting) {
@@ -225,7 +224,7 @@ private val ROCKER_WIDTH = 62.dp
 private val PAD_GAP = 12.dp
 
 @Composable
-private fun RemoteTab(ui: UiState, controller: TvController, onVoice: () -> Unit, onSwitchTv: () -> Unit, onAllApps: () -> Unit) {
+private fun RemoteTab(ui: UiState, controller: TvController, onVoice: () -> Unit, onSwitchTv: () -> Unit, onAllApps: (() -> Unit)?) {
     val connected = ui.connection is Connection.Connected
     val offline = ui.connection is Connection.Failed || ui.connection == Connection.Idle
     var touchpad by rememberSaveable { mutableStateOf(controller.useTouchpad) }
@@ -333,7 +332,7 @@ private fun OfflineCard(ui: UiState, controller: TvController, onSwitchTv: () ->
  * shortcuts as fit, then All apps.
  */
 @Composable
-private fun QuickLaunch(ui: UiState, shortcuts: List<Shortcut>, width: Dp, enabled: Boolean, onLaunch: (String) -> Unit, onAllApps: () -> Unit) {
+private fun QuickLaunch(ui: UiState, shortcuts: List<Shortcut>, width: Dp, enabled: Boolean, onLaunch: (String) -> Unit, onAllApps: (() -> Unit)?) {
     val onTv = brandOf(ui.currentApp)
     val live = if (onTv == null) null else shortcuts.firstOrNull { (brandOf(it.link) ?: brandOf(it.name)) == onTv }
     val lead = live ?: shortcuts.firstOrNull()
@@ -341,7 +340,8 @@ private fun QuickLaunch(ui: UiState, shortcuts: List<Shortcut>, width: Dp, enabl
     val keySize = 52.dp
     val gap = 6.dp
     val chip = 118.dp
-    val fit = ((width - chip - gap - keySize) / (keySize + gap)).toInt().coerceAtLeast(0)
+    val allApps = if (onAllApps != null) keySize + gap else 0.dp
+    val fit = ((width - chip - allApps) / (keySize + gap)).toInt().coerceAtLeast(0)
 
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(gap), verticalAlignment = Alignment.CenterVertically) {
         if (lead != null) {
@@ -373,7 +373,7 @@ private fun QuickLaunch(ui: UiState, shortcuts: List<Shortcut>, width: Dp, enabl
         others.take(fit).forEach { s ->
             PhysicalKey("Open ${s.name} on TV", { onLaunch(s.link) }, Modifier.size(keySize), enabled = enabled, radius = 16.dp) { AppLogo(s, 28.dp) }
         }
-        PhysicalKey("All apps", onAllApps, Modifier.size(keySize), radius = 16.dp) { Ico(R.drawable.ic_layout_grid) }
+        if (onAllApps != null) PhysicalKey("All apps", onAllApps, Modifier.size(keySize), radius = 16.dp) { Ico(R.drawable.ic_layout_grid) }
     }
 }
 
@@ -386,112 +386,6 @@ private fun AppLogo(s: Shortcut, size: Dp) {
     } else {
         Box(Modifier.size(size).background(Tok.Key, CircleShape), contentAlignment = Alignment.Center) {
             Ico(R.drawable.ic_app_window, size = size * 0.6f)
-        }
-    }
-}
-
-// ---- Type tab ----
-
-@Composable
-private fun TypeTab(ui: UiState, controller: TvController, onVoice: () -> Unit) {
-    val enabled = ui.connection is Connection.Connected
-    var text by rememberSaveable { mutableStateOf("") }
-    var focused by remember { mutableStateOf(false) }
-    val focus = remember { FocusRequester() }
-    val recent by controller.recentTexts.collectAsState()
-
-    // The TV's text box mirrors this field. The protocol can't send empty text, so clearing deletes key by key.
-    fun update(new: String) {
-        val old = text
-        text = new
-        if (new.isEmpty()) repeat(old.length.coerceAtMost(64)) { controller.key(Keys.DEL) } else controller.text(new)
-    }
-
-    fun submit() {
-        controller.key(Keys.ENTER)
-        controller.rememberText(text)
-    }
-
-    LaunchedEffect(Unit) {
-        delay(150)
-        runCatching { focus.requestFocus() }
-    }
-
-    Column(Modifier.fillMaxSize().imePadding().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(top = 10.dp, bottom = 16.dp)) {
-        Row(
-            Modifier.fillMaxWidth().height(64.dp).fieldBox(focused, radius = 16.dp).padding(start = 16.dp, end = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            BasicTextField(
-                value = text,
-                onValueChange = ::update,
-                enabled = enabled,
-                singleLine = true,
-                textStyle = TextStyle(fontFamily = Grotesk, fontSize = 20.sp, color = Tok.Bone),
-                cursorBrush = SolidColor(Tok.Signal),
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text, imeAction = ImeAction.Search),
-                keyboardActions = KeyboardActions(onSearch = { submit() }),
-                decorationBox = { inner ->
-                    Box(contentAlignment = Alignment.CenterStart) {
-                        if (text.isEmpty()) Text("Type here", fontFamily = Grotesk, fontSize = 20.sp, color = Tok.Dim)
-                        inner()
-                    }
-                },
-                modifier = Modifier.weight(1f).focusRequester(focus).onFocusChanged { focused = it.isFocused },
-            )
-            if (text.isNotEmpty()) HeaderButton(R.drawable.ic_x, "Clear") { update("") }
-            PhysicalKey("Voice type", onVoice, Modifier.size(48.dp), enabled = enabled) { Ico(R.drawable.ic_mic, size = 20.dp) }
-        }
-        Spacer(Modifier.height(8.dp))
-        Text(
-            "Select a search box on the TV first. Letters appear there as you type and replace what's in it.",
-            style = MaterialTheme.typography.bodySmall,
-            color = Tok.Dim,
-        )
-        if (recent.isNotEmpty()) {
-            Spacer(Modifier.height(18.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                SectionLabel("Recent", Modifier.weight(1f))
-                Text(
-                    "Clear",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = Tok.Dim,
-                    modifier = Modifier.clip(RoundedCornerShape(8.dp)).clickable(role = Role.Button, onClick = controller::clearRecentTexts).padding(horizontal = 8.dp, vertical = 6.dp),
-                )
-            }
-            Spacer(Modifier.height(6.dp))
-            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                recent.forEach { t ->
-                    Row(
-                        Modifier.height(40.dp).clip(RoundedCornerShape(20.dp)).border(1.dp, Tok.Seam, RoundedCornerShape(20.dp))
-                            .clickable(enabled = enabled, role = Role.Button, onClickLabel = "Type $t on the TV") { update(t) }
-                            .padding(horizontal = 14.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Ico(R.drawable.ic_clock, tint = Tok.Dim, size = 14.dp)
-                        Spacer(Modifier.width(6.dp))
-                        Text(t, style = MaterialTheme.typography.bodyMedium, color = Tok.Bone, maxLines = 1)
-                    }
-                }
-            }
-        }
-        Spacer(Modifier.height(18.dp))
-        SectionLabel("Pick a result on the TV")
-        Spacer(Modifier.height(8.dp))
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            val arrow = Modifier.weight(1f).height(52.dp)
-            IconKey(R.drawable.ic_chevron_left, "Left", { controller.key(Keys.DPAD_LEFT) }, arrow, repeat = true, enabled = enabled)
-            IconKey(R.drawable.ic_chevron_up, "Up", { controller.key(Keys.DPAD_UP) }, arrow, repeat = true, enabled = enabled)
-            IconKey(R.drawable.ic_chevron_down, "Down", { controller.key(Keys.DPAD_DOWN) }, arrow, repeat = true, enabled = enabled)
-            IconKey(R.drawable.ic_chevron_right, "Right", { controller.key(Keys.DPAD_RIGHT) }, arrow, repeat = true, enabled = enabled)
-            PhysicalKey("Search", ::submit, Modifier.weight(1.6f).height(52.dp), enabled = enabled, primary = true) {
-                val fg = if (enabled) Tok.Ground else Tok.Bone
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Ico(R.drawable.ic_corner_down_left, tint = fg, size = 18.dp)
-                    Spacer(Modifier.width(6.dp))
-                    Text("Search", fontFamily = Grotesk, fontWeight = FontWeight.Bold, fontSize = 14.sp, color = fg)
-                }
-            }
         }
     }
 }
@@ -530,12 +424,12 @@ internal fun brandOf(text: String?): String? {
 }
 
 /**
- * "Apps": the app on the TV now as a card (with a jump to typing), then the shortcuts three across.
+ * "Apps": the app on the TV now as a card, then the shortcuts three across.
  * Edit (in the header) shows a remove badge on each tile; long-press still removes too.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun AppsTab(ui: UiState, controller: TvController, editing: Boolean, onType: () -> Unit) {
+private fun AppsTab(ui: UiState, controller: TvController, editing: Boolean) {
     val shortcuts by controller.shortcuts.collectAsState()
     val enabled = ui.connection is Connection.Connected
     val onTv = brandOf(ui.currentApp)
@@ -572,10 +466,7 @@ private fun AppsTab(ui: UiState, controller: TvController, editing: Boolean, onT
                         Spacer(Modifier.width(14.dp))
                         Column(Modifier.weight(1f)) {
                             Text(appLabel(liveApp), style = MaterialTheme.typography.titleMedium.copy(fontSize = 16.sp), color = Tok.Bone, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            Text("Need to search? Type it here.", style = MaterialTheme.typography.bodySmall, color = Tok.Dim, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
-                        Spacer(Modifier.width(10.dp))
-                        PillButton("Type", onType, icon = R.drawable.ic_keyboard, height = 44.dp)
                     }
                     Spacer(Modifier.height(12.dp))
                 }
@@ -750,14 +641,6 @@ private fun statusLine(ui: UiState): String = when (ui.connection) {
     is Connection.Failed -> "Not connected"
     Connection.Idle -> "Not connected"
 }
-
-/** "Living Room TV · YouTube" for the Type and Apps headers. */
-private fun contextLine(ui: UiState): String =
-    if (ui.connection is Connection.Connected) {
-        listOfNotNull(ui.tv?.name, ui.currentApp?.let(::appLabel)).joinToString(" · ")
-    } else {
-        statusLine(ui)
-    }
 
 private const val HOME_PACKAGE = "com.google.android.apps.tv.launcherx"
 

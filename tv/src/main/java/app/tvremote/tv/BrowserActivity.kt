@@ -36,7 +36,7 @@ import app.tvremote.protocol.normalizeInput
 import app.tvremote.protocol.siteOf
 import java.net.BindException
 
-class BrowserActivity : Activity(), Tab.Owner, ControlHandler, BrowserChrome.Actions, NativePlayer.Listener {
+class BrowserActivity : Activity(), Tab.Owner, ControlHandler, BrowserChrome.Actions {
     private val ui = Handler(Looper.getMainLooper())
     private val tabs = mutableListOf<Tab>()
     private var current = 0
@@ -52,8 +52,6 @@ class BrowserActivity : Activity(), Tab.Owner, ControlHandler, BrowserChrome.Act
     private var leftTab: Tab? = null
     private var rightTab: Tab? = null
 
-    private lateinit var playerLayer: FrameLayout
-    private lateinit var player: NativePlayer
     private lateinit var adLists: AdLists
     private lateinit var allowStore: android.content.SharedPreferences
 
@@ -118,7 +116,6 @@ class BrowserActivity : Activity(), Tab.Owner, ControlHandler, BrowserChrome.Act
         blocklist = adLists.seed
         loadAdLists()
         buildUi()
-        player = NativePlayer(this, playerLayer, this)
         Thread {
             val summary = DrmInfo.widevineSummary()
             ui.post { drmSummary = summary; refreshInfo() }
@@ -166,7 +163,6 @@ class BrowserActivity : Activity(), Tab.Owner, ControlHandler, BrowserChrome.Act
     }
 
     override fun onStop() {
-        player.pause()
         ui.removeCallbacks(videoTick)
         server?.close()
         server = null
@@ -175,7 +171,6 @@ class BrowserActivity : Activity(), Tab.Owner, ControlHandler, BrowserChrome.Act
     }
 
     override fun onDestroy() {
-        player.close(null)
         ui.removeCallbacksAndMessages(null)
         tabs.toList().forEach { it.destroy() }
         tabs.clear()
@@ -225,12 +220,6 @@ class BrowserActivity : Activity(), Tab.Owner, ControlHandler, BrowserChrome.Act
         }
         root.addView(fullscreen, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
 
-        playerLayer = FrameLayout(this).apply {
-            setBackgroundColor(Color.BLACK)
-            visibility = View.GONE
-        }
-        root.addView(playerLayer, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-
         cursor = CursorView(this)
         root.addView(cursor, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         setContentView(root)
@@ -263,13 +252,11 @@ class BrowserActivity : Activity(), Tab.Owner, ControlHandler, BrowserChrome.Act
                 adsBlocked = t?.adsBlocked ?: 0,
                 phoneText = phone,
                 bookmarked = t != null && !t.isHome && bookmarkStore.contains(url),
-                media = t != null && t.hasMedia && !player.isOpen,
                 adsAllowed = t != null && adsAllowed(t.pageSite),
                 zoom = t?.let { siteScripts.zoomFor(it.pageSite) } ?: 100,
                 webPage = t != null && !t.isHome && t.pageSite.isNotEmpty(),
             ),
         )
-        cursor.visibility = if (player.isOpen) View.GONE else View.VISIBLE
     }
 
     private fun tabTitle(t: Tab): String = when {
@@ -309,7 +296,6 @@ class BrowserActivity : Activity(), Tab.Owner, ControlHandler, BrowserChrome.Act
 
     override fun onAdsToggle() = toggleAds()
 
-    override fun onPlayMedia() = playMedia()
 
     override fun onZoomReset() = zoom(ZoomAction.RESET)
 
@@ -526,7 +512,6 @@ class BrowserActivity : Activity(), Tab.Owner, ControlHandler, BrowserChrome.Act
                     desktop = desktop,
                     loading = t.loading,
                     blocked = t.lastBlockedHost,
-                    media = t.hasMedia,
                     adsAllowed = adsAllowed(t.pageSite),
                     zoom = siteScripts.zoomFor(t.pageSite),
                     split = split,
@@ -557,15 +542,6 @@ class BrowserActivity : Activity(), Tab.Owner, ControlHandler, BrowserChrome.Act
 
     private fun run(c: Command) {
         val tab = tabs.getOrNull(current) ?: return
-        if (player.isOpen) {
-            // The pointer is hidden over the TV player; the trackpad's Click pauses and plays.
-            when (c) {
-                is Command.Move, is Command.Scroll -> return
-                Command.Click -> { player.command(VideoAction.TOGGLE, 0f); return }
-                is Command.Nav -> if (c.action == NavAction.BACK) { player.close(null); return }
-                else -> Unit
-            }
-        }
         when (c) {
             is Command.Move -> moveCursor(c.dx, c.dy)
             Command.Click -> click()
@@ -583,7 +559,6 @@ class BrowserActivity : Activity(), Tab.Owner, ControlHandler, BrowserChrome.Act
                 NavAction.HOME -> tab.loadHome()
                 NavAction.ALLOW_BLOCKED -> tab.allowBlocked()
                 NavAction.READER -> tab.toggleReader()
-                NavAction.PLAYER -> playMedia()
                 NavAction.ADS -> toggleAds()
                 NavAction.AD_LISTS -> {
                     adLists.enabled = !adLists.enabled
@@ -633,7 +608,6 @@ class BrowserActivity : Activity(), Tab.Owner, ControlHandler, BrowserChrome.Act
      * WebView, or a player that hides its <video>), the phone still learns the TV is full screen.
      */
     private fun currentVideo(): VideoState? {
-        if (player.isOpen) return player.state()
         val fullscreen = customView != null
         val reported = tabs.getOrNull(current)?.video?.video
         return when {
@@ -656,12 +630,7 @@ class BrowserActivity : Activity(), Tab.Owner, ControlHandler, BrowserChrome.Act
     }
 
     private fun videoCommand(tab: Tab, c: Command.Video) {
-        if (player.isOpen) {
-            player.command(c.action, c.value)
-            return
-        }
         when (c.action) {
-            VideoAction.SUBTITLE_SHIFT -> Unit // only the TV player has subtitles of its own
             VideoAction.EXIT_FULLSCREEN -> {
                 tab.video.send(VideoAction.EXIT_FULLSCREEN)
                 hideCustomView()
@@ -669,37 +638,33 @@ class BrowserActivity : Activity(), Tab.Owner, ControlHandler, BrowserChrome.Act
             }
             // Without a reachable player, the media key still pauses and resumes what is playing.
             VideoAction.TOGGLE -> if (!tab.video.send(VideoAction.TOGGLE)) tab.key(KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE)
+            VideoAction.FULLSCREEN -> enterFullscreen(tab)
             else -> tab.video.send(c.action, c.value)
         }
     }
 
-    // ---- TV player ----
-
-    /** Plays the stream this page fetched in the TV's own player, after pausing the page's player. */
-    private fun playMedia() {
-        val tab = tabs.getOrNull(current) ?: return
-        val (stream, subtitles) = tab.mediaToPlay() ?: run {
-            toast("No video stream found on this page yet. Start the video in the page first.")
+    /**
+     * Shows the page's video full screen: the video's frame says where the video is and is armed, then a
+     * real tap there (the only thing a page accepts as a reason to go full screen) is turned into the request.
+     */
+    private fun enterFullscreen(tab: Tab) {
+        if (customView != null) return
+        val asked = tab.video.requestFullscreen { x, y, viewportWidth ->
+            val web = tab.web
+            if (tabs.getOrNull(current) !== tab || customView != null || web.width <= 0) return@requestFullscreen
+            val scale = web.width / viewportWidth
+            lastUserActionAt = SystemClock.uptimeMillis()
+            injector.tap(web, (x * scale).coerceIn(1f, web.width - 1f), (y * scale).coerceIn(1f, web.height - 1f))
+        }
+        if (!asked) {
+            toast("No video on this page yet")
             return
         }
-        if (customView != null) hideCustomView()
-        if (tab.video.video?.playing == true) tab.video.send(VideoAction.TOGGLE)
-        tab.web.evaluateJavascript("document.querySelectorAll('video').forEach(function(v){try{v.pause()}catch(e){}})", null)
-        if (!player.open(stream, subtitles, tab.displayUrl, tab.userAgent)) {
-            toast("Can't play that here")
-            return
-        }
-        refreshInfo()
-        publishVideo(force = true)
-    }
-
-    override fun onPlayerChanged() = publishVideo()
-
-    override fun onPlayerClosed(message: String?) {
-        message?.let(::toast)
-        refreshInfo()
-        publish()
-        publishVideo(force = true)
+        ui.postDelayed({
+            if (customView == null && tabs.getOrNull(current) === tab) {
+                toast("Couldn't open full screen. Use the player's own full screen button.")
+            }
+        }, VideoBridge.FULLSCREEN_WINDOW_MS + 1_000L)
     }
 
     // ---- ads, zoom ----
@@ -843,13 +808,6 @@ class BrowserActivity : Activity(), Tab.Owner, ControlHandler, BrowserChrome.Act
     // ---- TV remote ----
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        if (player.isOpen) {
-            if (event.keyCode == KeyEvent.KEYCODE_BACK) {
-                if (event.action == KeyEvent.ACTION_UP) player.close(null)
-                return true
-            }
-            return player.dispatchKey(event) || super.dispatchKeyEvent(event)
-        }
         val down = event.action == KeyEvent.ACTION_DOWN
         when (event.keyCode) {
             KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT -> {

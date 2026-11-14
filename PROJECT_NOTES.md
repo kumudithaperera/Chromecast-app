@@ -99,7 +99,7 @@ Status: phone remote built (untested on a TV). TV browser + phone trackpad proto
 - Verified: with it on, the phone app's volume down, up and mute each send `<User Control Pressed>` (Volume down / up / mute) to the TV and the TV acknowledges; with it off nothing is sent.
 - Side effect to check: with it on, the Chromecast remote's own volume buttons could step twice (IR plus CEC). Not tested.
 - App changes: the "Vol 0" in the header was a made-up default, since the Chromecast sends no level or maximum, so it's gone. The TV's volume message field 4 was 0 with CEC volume off and 1 with it on; the Remote tab shows a note under the volume keys when it is 0. The Chromecast never reports a volume number, so none is shown.
-- Network note: adb to the Chromecast needs the Mac on the same Wi-Fi ("Mjölnir", 192.168.5.x).
+- Network note: adb to the Chromecast needs the Mac on the same Wi-Fi.
 
 
 ## TV browser + phone trackpad prototype (built 11/10)

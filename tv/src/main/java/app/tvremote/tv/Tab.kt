@@ -20,8 +20,6 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.webkit.ScriptHandler
 import app.tvremote.protocol.HostBlocklist
-import app.tvremote.protocol.MediaFinds
-import app.tvremote.protocol.MediaRef
 import app.tvremote.protocol.isWebUrl
 import app.tvremote.protocol.siteOf
 import org.json.JSONObject
@@ -120,17 +118,6 @@ class Tab(
     /** The site (as `siteOf` gives it) of the page in this tab, "" for our own pages. Read off the main thread. */
     @Volatile var pageSite: String = ""
         private set
-
-    /** Video streams and subtitles this page asked for. Guarded by itself. */
-    private val media = MediaFinds()
-
-    /** True when the page has fetched a stream the TV's own player can play. */
-    val hasMedia: Boolean get() = synchronized(media) { media.hasStream }
-
-    /** The stream to play and the subtitle files seen with it, or null. */
-    fun mediaToPlay(): Pair<MediaRef, List<MediaRef>>? = synchronized(media) {
-        media.best()?.let { it to media.subtitleTracks() }
-    }
 
     val userAgent: String get() = web.settings.userAgentString
 
@@ -377,15 +364,9 @@ class Tab(
                 adsBlockedCount.set(0)
                 mainRequestUrl = request.url.toString()
                 pageSite = siteOf(request.url.host)
-                synchronized(media) { media.clear() }
             }
             val site = pageSite
             if ((site.isNotEmpty() && owner.adsAllowed(site)) || !owner.blocklist.isBlocked(request.url.host)) {
-                // Not blocked: note it if it's a video stream or subtitles the TV player could use.
-                if (!request.isForMainFrame) {
-                    val isNew = synchronized(media) { media.offer(request.url.toString(), request.requestHeaders["Referer"]) }
-                    if (isNew) view.post { owner.onTabUpdated(this@Tab) }
-                }
                 return null
             }
             adsBlockedCount.incrementAndGet()
@@ -430,7 +411,6 @@ class Tab(
                 if (pageUrl.startsWith(HOME_BASE)) {
                     adsBlockedCount.set(0)
                     pageSite = ""
-                    synchronized(media) { media.clear() }
                 }
             }
             url = pageUrl

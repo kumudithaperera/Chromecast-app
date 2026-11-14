@@ -23,10 +23,10 @@ class WireTest {
             Command.Video(VideoAction.SEEK, 754.5f),
             Command.Video(VideoAction.SKIP, -10f),
             Command.Video(VideoAction.RATE, 1.5f),
+            Command.Video(VideoAction.VOLUME, -0.1f),
             Command.Video(VideoAction.MUTE),
             Command.Video(VideoAction.EXIT_FULLSCREEN),
-            Command.Video(VideoAction.SUBTITLE_SHIFT, -0.5f),
-            Command.Nav(NavAction.PLAYER),
+            Command.Video(VideoAction.FULLSCREEN),
             Command.Nav(NavAction.ADS),
             Command.Nav(NavAction.HELPERS),
             Command.Tab(TabAction.SPLIT),
@@ -42,7 +42,7 @@ class WireTest {
             "", " ", "X", "M", "M 1", "M 1 2 3", "M a b", "M NaN 1", "M Infinity 1", "S", "S x",
             "T", "T %zz", "K ESCAPE", "N EXPLODE", "B SIDEWAYS", "D 2", "G", "G %20",
             "V", "V PLAY", "V SEEK", "V SEEK abc", "V SEEK NaN", "V RATE", "V SKIP Infinity",
-            "Z", "Z BIGGER", "V SUBTITLE_SHIFT", "V SUBTITLE_SHIFT x",
+            "Z", "Z BIGGER", "V VOLUME", "V VOLUME NaN", "N PLAYER", "V SUBTITLE_SHIFT 1",
         ).forEach { assertNull("'$it'", parseCommand(it)) }
     }
 
@@ -55,6 +55,8 @@ class WireTest {
         assertEquals(Command.Video(VideoAction.SKIP, 3600f), parseCommand("V SKIP 99999"))
         assertEquals(Command.Video(VideoAction.RATE, 4f), parseCommand("V RATE 40"))
         assertEquals(Command.Video(VideoAction.RATE, 0.25f), parseCommand("V RATE 0"))
+        assertEquals(Command.Video(VideoAction.VOLUME, 1f), parseCommand("V VOLUME 5"))
+        assertEquals(Command.Video(VideoAction.VOLUME, -1f), parseCommand("V VOLUME -5"))
     }
 
     @Test fun standardPlaybackSpeedsSurviveTheWire() {
@@ -79,28 +81,20 @@ class WireTest {
             .forEach { assertNull("'$it'", parseVideo(it)) }
     }
 
-    @Test fun newVideoFieldsRoundTripAndOldLinesStillParse() {
-        val native = VideoState(playing = true, position = 10f, duration = 100f, fullscreen = true, subtitleOffset = -1.5f, native = true)
-        assertEquals(VideoUpdate(native), parseVideo(formatVideo(native)))
-        val noSubs = native.copy(subtitleOffset = null)
-        assertEquals(VideoUpdate(noSubs), parseVideo(formatVideo(noSubs)))
-        // A line from an older TV app has only the first six fields.
+    @Test fun videoLinesHaveExactlySixFields() {
         assertEquals(VideoUpdate(VideoState(true, 1f, 2f, false, 1f, false)), parseVideo("VIDEO 1 1.0 2.0 0 1.00 0"))
-        assertEquals(30f, parseVideo("VIDEO 1 1 2 0 1 0 999 1")!!.state!!.subtitleOffset)
-        assertNull(parseVideo("VIDEO 1 1 2 0 1 0 x 1"))
         assertNull(parseVideo("VIDEO 1 1 2 0 1 0 1"))
-        assertEquals(30f, (parseCommand("V SUBTITLE_SHIFT 500") as Command.Video).value)
+        assertNull(parseVideo("VIDEO 1 1 2 0 1 0 - 0 extra"))
     }
 
     @Test fun newStateFieldsRoundTripAndOldLinesStillParse() {
-        val s = BrowserState("https://a.test/", "T", media = true, adsAllowed = true, zoom = 150, split = true, helpers = false)
+        val s = BrowserState("https://a.test/", "T", adsAllowed = true, zoom = 150, split = true, helpers = false)
         assertEquals(s, parseState(formatState(s)))
         val old = parseState("STATE https%3A%2F%2Fa.test%2F T 1 0 1 0 ~")!!
         assertEquals(100, old.zoom)
         assertTrue(old.helpers)
-        assertFalse(old.media)
         assertEquals(MAX_ZOOM, parseState(formatState(BrowserState(zoom = 900)))!!.zoom)
-        assertNull(parseState("STATE ~ ~ 1 0 1 0 ~ 1 0 abc 0 1"))
+        assertNull(parseState("STATE ~ ~ 1 0 1 0 ~ 0 abc 0 1"))
     }
 
     @Test fun overlongTextIsRejected() {

@@ -40,11 +40,4 @@ dependencies {
     implementation(project(":protocol"))
     // Reaches video players inside cross-origin iframes, which plain evaluateJavascript cannot.
     implementation("androidx.webkit:webkit:1.12.1")
-    // The TV's own video player for streams found on a page: better A/V sync than the page's player,
-    // subtitle timing, speed and audio tracks. HLS and DASH need their own modules.
-    val media3 = "1.10.1"
-    implementation("androidx.media3:media3-exoplayer:$media3")
-    implementation("androidx.media3:media3-exoplayer-hls:$media3")
-    implementation("androidx.media3:media3-exoplayer-dash:$media3")
-    implementation("androidx.media3:media3-ui:$media3")
 }

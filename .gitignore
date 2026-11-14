@@ -5,3 +5,12 @@ local.properties
 .idea/
 .kotlin/
 security-reports/
+
+# Build outputs and secrets
+*.apk
+*.aab
+*.jks
+*.keystore
+.env
+.env.*
+.DS_Store

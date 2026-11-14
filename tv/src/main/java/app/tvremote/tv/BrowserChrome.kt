@@ -36,8 +36,6 @@ class BrowserChrome(private val context: Context, private val actions: Actions) 
         /** Turn ad blocking off or back on for this site. */
         fun onAdsToggle()
 
-        /** Play the page's stream in the TV's own player. */
-        fun onPlayMedia()
 
         /** Put this site's zoom back to 100%. */
         fun onZoomReset()
@@ -53,8 +51,6 @@ class BrowserChrome(private val context: Context, private val actions: Actions) 
         val adsBlocked: Int,
         val phoneText: String,
         val bookmarked: Boolean,
-        /** The page has a stream the TV player can play. */
-        val media: Boolean = false,
         /** Ad blocking is off for this site. */
         val adsAllowed: Boolean = false,
         /** Page zoom in percent for this site. */
@@ -114,10 +110,7 @@ class BrowserChrome(private val context: Context, private val actions: Actions) 
         setOnClickListener { actions.onAdsToggle() }
         contentDescription = "Ad blocking on this site"
     }
-    private val playPill = pill(icon(R.drawable.ic_play, R.color.bone, 18), text(14, sans, R.color.bone).apply { text = "TV player" }).apply {
-        setOnClickListener { actions.onPlayMedia() }
-        contentDescription = "Play this video in the TV player"
-    }
+
     private val zoomText = text(14, mono, R.color.bone)
     private val zoomPill = LinearLayout(context).apply {
         orientation = LinearLayout.HORIZONTAL
@@ -149,7 +142,6 @@ class BrowserChrome(private val context: Context, private val actions: Actions) 
         bar.addView(reload, gap(LinearLayout.LayoutParams(px(44), px(44))))
         bar.addView(urlPill, gap(LinearLayout.LayoutParams(0, px(44), 1f)))
         bar.addView(zoomPill, gap(LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, px(36))))
-        bar.addView(playPill, gap(LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, px(36))))
         bar.addView(readerPill, gap(LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, px(36))))
         bar.addView(adsPill, gap(LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, px(36))))
         bar.addView(phonePill, gap(LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, px(36))))
@@ -171,7 +163,6 @@ class BrowserChrome(private val context: Context, private val actions: Actions) 
             else -> "${m.adsBlocked} ads blocked"
         }
         adsIcon.imageTintList = ColorStateList.valueOf(color(if (m.adsAllowed) R.color.dim else R.color.ok))
-        playPill.visibility = if (m.media) View.VISIBLE else View.GONE
         zoomPill.visibility = if (m.webPage && m.zoom != 100) View.VISIBLE else View.GONE
         zoomText.text = "${m.zoom}%"
         phoneText.text = m.phoneText
@@ -231,7 +222,7 @@ class BrowserChrome(private val context: Context, private val actions: Actions) 
     fun itemAt(root: View, x: Float, y: Float): View? {
         val origin = IntArray(2).also(root::getLocationInWindow)
         val loc = IntArray(2)
-        return (tabViews + listOf(back, reload, urlPill, zoomPill, playPill, readerPill, adsPill, phonePill, bookmark)).firstOrNull { v ->
+        return (tabViews + listOf(back, reload, urlPill, zoomPill, readerPill, adsPill, phonePill, bookmark)).firstOrNull { v ->
             if (v.visibility != View.VISIBLE || !v.isAttachedToWindow) return@firstOrNull false
             v.getLocationInWindow(loc)
             val left = loc[0] - origin[0]
@@ -252,7 +243,7 @@ class BrowserChrome(private val context: Context, private val actions: Actions) 
         v?.let {
             val radius = when (it) {
                 urlPill -> 22
-                readerPill, phonePill, adsPill, playPill, zoomPill -> 18
+                readerPill, phonePill, adsPill, zoomPill -> 18
                 back, reload, bookmark -> 22
                 else -> 10
             }

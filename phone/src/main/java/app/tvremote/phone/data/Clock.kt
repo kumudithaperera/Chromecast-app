@@ -9,3 +9,12 @@ fun formatClock(seconds: Float): String {
     val s = total % 60
     return if (h > 0) "%d:%02d:%02d".format(h, m, s) else "%d:%02d".format(m, s)
 }
+
+/**
+ * When the video will end, in wall-clock milliseconds, playing at [rate] from [position] seconds of
+ * [duration]. Null when that can't be known: no position, no duration (live), or a rate of zero.
+ */
+fun endsAtMillis(nowMillis: Long, position: Float, duration: Float, rate: Float): Long? {
+    if (position < 0f || duration <= 0f || rate <= 0f || position > duration) return null
+    return nowMillis + ((duration - position) / rate * 1000f).toLong()
+}

@@ -1,9 +1,13 @@
 package app.tvremote.phone.ui
 
+import android.view.KeyEvent
+import android.view.Window
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -17,6 +21,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -25,7 +30,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
@@ -41,11 +45,9 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -55,6 +57,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -71,6 +74,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.window.DialogWindowProvider
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -86,6 +91,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import app.tvremote.phone.R
 import app.tvremote.phone.atv.Keys
+import app.tvremote.phone.data.endsAtMillis
 import app.tvremote.phone.data.formatClock
 import app.tvremote.phone.data.BrowserLink
 import app.tvremote.phone.data.LinkState
@@ -106,6 +112,7 @@ import app.tvremote.protocol.VideoAction
 import app.tvremote.protocol.VideoState
 import app.tvremote.protocol.ZoomAction
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 private val PIN_KEYS = listOf(
     listOf("1", "2", "3"),
@@ -124,6 +131,7 @@ fun BrowserScreen(
     onOpenBrowserOnTv: () -> Unit,
     onTvKey: (Int) -> Unit,
     tvKeysEnabled: Boolean,
+    tvVolume: Boolean,
     onBack: () -> Unit,
 ) {
     val state by link.state.collectAsState()
@@ -181,7 +189,7 @@ fun BrowserScreen(
                 // Shorter keys: this keypad shares the screen with the tab bar.
                 keyHeight = 54.dp,
             )
-            is LinkState.Ready -> Controls(link, page, video, prefs, notes, tvName = tv.name, onTvKey = onTvKey, tvKeysEnabled = tvKeysEnabled)
+            is LinkState.Ready -> Controls(link, page, video, prefs, notes, tvName = tv.name, onTvKey = onTvKey, tvVolume = tvVolume)
             else -> {
                 val (status, lamp) = when (s) {
                     LinkState.Connecting, LinkState.Idle -> "Connecting to ${tv.name}…" to Lamp.Busy
@@ -234,19 +242,21 @@ private fun Controls(
     notes: WatchNotes,
     tvName: String,
     onTvKey: (Int) -> Unit,
-    tvKeysEnabled: Boolean,
+    tvVolume: Boolean,
 ) {
-    // While a video is full screen on the TV a floating button opens its controls over this screen,
-    // so the pointer and the player are one tap apart and nobody has to switch screens.
+    // Two tabs, Trackpad and Video, side by side in a pager: tap a tab or swipe across. The Video tab
+    // exists while the TV reports a video, and opens by itself when that video goes full screen.
     val fullscreen = video?.fullscreen == true
-    var playerOpen by rememberSaveable { mutableStateOf(false) }
-    LaunchedEffect(fullscreen) { if (!fullscreen) playerOpen = false }
+    val hasVideo = video != null
+    val pager = rememberPagerState(pageCount = { if (hasVideo) 2 else 1 })
+    val scope = rememberCoroutineScope()
+    LaunchedEffect(fullscreen) { if (fullscreen && pager.currentPage != VIDEO_PAGE) pager.animateScrollToPage(VIDEO_PAGE) }
 
     var speed by remember { mutableFloatStateOf(prefs.trackpadSpeed) }
     var menuOpen by remember { mutableStateOf(false) }
     var speedOpen by remember { mutableStateOf(false) }
     var keyboard by rememberSaveable { mutableStateOf(false) }
-    // Quick note is only offered in the video panel, so that panel comes back when the note is done.
+    // Quick note is offered on the Video tab; the tab stays put while the note sheet is up.
     var noteOpen by rememberSaveable { mutableStateOf(false) }
     val context = LocalContext.current
 
@@ -289,100 +299,43 @@ private fun Controls(
         }
     }
 
-    Column(Modifier.fillMaxSize().imePadding().padding(horizontal = 20.dp).padding(top = 12.dp)) {
-        AddressBar(page, onGo = { link.send(Command.Go(it)) })
-        if (page.blocked.isNotEmpty()) {
-            Spacer(Modifier.height(10.dp))
-            Row(
-                Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(Tok.Panel)
-                    .clickable(role = Role.Button) { link.send(Command.Nav(NavAction.ALLOW_BLOCKED)) }
-                    .padding(horizontal = 14.dp, vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Ico(R.drawable.ic_shield_check, tint = Tok.Ok, size = 18.dp)
-                Spacer(Modifier.width(8.dp))
-                Text("Blocked ${page.blocked}", style = MaterialTheme.typography.bodyMedium, color = Tok.Bone, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-                Text("Allow once", style = MaterialTheme.typography.titleSmall, color = Tok.Signal)
-            }
-        }
-        if (page.media && !fullscreen) {
-            Spacer(Modifier.height(10.dp))
-            // A stream was found on the page: offer the TV's own player (better sync, subtitle timing).
-            Row(
-                Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(Tok.Panel)
-                    .clickable(role = Role.Button, onClickLabel = "Play in the TV player") { link.send(Command.Nav(NavAction.PLAYER)) }
-                    .padding(horizontal = 14.dp, vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Ico(R.drawable.ic_film, tint = Tok.Bone, size = 18.dp)
-                Spacer(Modifier.width(8.dp))
-                Text("Video found on this page", style = MaterialTheme.typography.bodyMedium, color = Tok.Bone, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-                Text("Play in TV player", style = MaterialTheme.typography.titleSmall, color = Tok.Signal)
-            }
-        }
-        Spacer(Modifier.height(12.dp))
-        Row(Modifier.fillMaxWidth().weight(1f).heightIn(min = 160.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            Box(Modifier.weight(1f).fillMaxHeight()) {
-                Trackpad(link, speed = { speed }, modifier = Modifier.fillMaxSize())
-                if (fullscreen) {
-                    VideoButton(
-                        playing = video?.playing == true,
-                        onClick = { playerOpen = true },
-                        modifier = Modifier.align(Alignment.TopEnd).padding(14.dp),
-                    )
-                }
-            }
-            // Its own scroll area, so scrolling doesn't need two fingers on the trackpad.
-            ScrollStrip(link, speed = { speed }, modifier = Modifier.width(56.dp).fillMaxHeight())
-        }
-        Spacer(Modifier.height(12.dp))
-        if (keyboard) {
-            LiveKeyboard(link)
-            Spacer(Modifier.height(10.dp))
-        }
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            IconKey(R.drawable.ic_arrow_left, "Previous page", { link.send(Command.Nav(NavAction.BACK)) }, Modifier.weight(1f).height(60.dp))
-            IconKey(
-                if (page.loading) R.drawable.ic_x else R.drawable.ic_refresh_cw,
-                if (page.loading) "Stop loading" else "Reload",
-                { link.send(Command.Nav(if (page.loading) NavAction.STOP else NavAction.RELOAD)) },
-                Modifier.weight(1f).height(60.dp),
-            )
-            IconKey(R.drawable.ic_book_open, "Reader mode", { link.send(Command.Nav(NavAction.READER)) }, Modifier.weight(1f).height(60.dp))
-            IconKey(R.drawable.ic_keyboard, if (keyboard) "Hide keyboard" else "Keyboard", { keyboard = !keyboard }, Modifier.weight(1f).height(60.dp))
-            // Click shares the key row, so the trackpad gets the height a separate row would take.
-            PhysicalKey("Click", { link.send(Command.Click) }, Modifier.weight(1.9f).height(60.dp), primary = true) {
-                Text("Click", fontFamily = Grotesk, fontWeight = FontWeight.Bold, fontSize = 15.sp, color = Tok.Ground)
-            }
-        }
-        Spacer(Modifier.height(16.dp))
+    if (hasVideo) {
+        Segmented(
+            options = listOf("Trackpad", if (video?.playing == true) "Video · playing" else "Video"),
+            selected = pager.currentPage,
+            onSelect = { scope.launch { pager.animateScrollToPage(it) } },
+            icons = listOf(R.drawable.ic_mouse_pointer_2, R.drawable.ic_clapperboard),
+            modifier = Modifier.padding(horizontal = 20.dp).padding(top = 8.dp),
+        )
     }
-
-    if (playerOpen && video != null) {
-        ModalBottomSheet(
-            onDismissRequest = { playerOpen = false },
-            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-            containerColor = Tok.Panel,
-            scrimColor = Tok.Ground.copy(alpha = 0.6f),
-        ) {
-            PlayerPanel(video, page, link, onTvKey, tvKeysEnabled, onNote = { playerOpen = false; noteOpen = true })
+    HorizontalPager(
+        state = pager,
+        modifier = Modifier.fillMaxSize().imePadding(),
+        verticalAlignment = Alignment.Top,
+        key = { it },
+    ) { pageIndex ->
+        if (pageIndex == VIDEO_PAGE && video != null) {
+            PlayerPanel(
+                video, page, link, onTvKey, tvVolume, pointerSpeed = { speed },
+                // Only the tab on screen takes the phone's volume buttons.
+                active = pager.currentPage == VIDEO_PAGE,
+                onNote = { noteOpen = true },
+            )
+        } else {
+            TrackpadPage(link, page, speed = { speed }, keyboard = keyboard, onKeyboard = { keyboard = !keyboard })
         }
     }
 
     if (noteOpen) {
-        val closeNote = {
-            noteOpen = false
-            if (fullscreen) playerOpen = true
-        }
         QuickNoteSheet(
             page = page,
             video = video,
             onSave = { d ->
                 notes.add(d.show, d.episode, d.text, page.url, d.position)
                 android.widget.Toast.makeText(context, "Saved to Notes", android.widget.Toast.LENGTH_SHORT).show()
-                closeNote()
+                noteOpen = false
             },
-            onDismiss = closeNote,
+            onDismiss = { noteOpen = false },
         )
     }
 
@@ -410,49 +363,155 @@ private fun Controls(
     }
 }
 
-/** The floating button over the trackpad that opens the video controls. Bone, so the yellow stays on Click. */
+/** Index of the Video tab in the browser screen's pager; the trackpad is 0. */
+private const val VIDEO_PAGE = 1
+
+/** The Trackpad tab: address bar, notices, the pad with its scroll strip, and the key row. */
 @Composable
-private fun VideoButton(playing: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
-    Row(
-        modifier
-            .height(52.dp)
-            .clip(RoundedCornerShape(26.dp))
-            .background(Tok.Bone)
-            .clickable(role = Role.Button, onClickLabel = "Open video controls", onClick = onClick)
-            .semantics { contentDescription = if (playing) "Video controls. Playing." else "Video controls. Paused." }
-            .padding(start = 16.dp, end = 20.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Ico(R.drawable.ic_clapperboard, tint = Tok.Ground, size = 22.dp)
-        Spacer(Modifier.width(10.dp))
-        Text("Video", style = MaterialTheme.typography.labelLarge, color = Tok.Ground)
+private fun TrackpadPage(
+    link: BrowserLink,
+    page: BrowserState,
+    speed: () -> Float,
+    keyboard: Boolean,
+    onKeyboard: () -> Unit,
+) {
+    Column(Modifier.fillMaxSize().padding(horizontal = 20.dp).padding(top = 12.dp)) {
+        AddressBar(page, onGo = { link.send(Command.Go(it)) })
+        if (page.blocked.isNotEmpty()) {
+            Spacer(Modifier.height(10.dp))
+            Row(
+                Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(Tok.Panel)
+                    .clickable(role = Role.Button) { link.send(Command.Nav(NavAction.ALLOW_BLOCKED)) }
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Ico(R.drawable.ic_shield_check, tint = Tok.Ok, size = 18.dp)
+                Spacer(Modifier.width(8.dp))
+                Text("Blocked ${page.blocked}", style = MaterialTheme.typography.bodyMedium, color = Tok.Bone, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                Text("Allow once", style = MaterialTheme.typography.titleSmall, color = Tok.Signal)
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+        Row(Modifier.fillMaxWidth().weight(1f).heightIn(min = 160.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Trackpad(link, speed = speed, modifier = Modifier.weight(1f).fillMaxHeight())
+            // Its own scroll area, so scrolling doesn't need two fingers on the trackpad.
+            ScrollStrip(link, speed = speed, modifier = Modifier.width(56.dp).fillMaxHeight())
+        }
+        Spacer(Modifier.height(12.dp))
+        if (keyboard) {
+            LiveKeyboard(link)
+            Spacer(Modifier.height(10.dp))
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            IconKey(R.drawable.ic_arrow_left, "Previous page", { link.send(Command.Nav(NavAction.BACK)) }, Modifier.weight(1f).height(60.dp))
+            IconKey(
+                if (page.loading) R.drawable.ic_x else R.drawable.ic_refresh_cw,
+                if (page.loading) "Stop loading" else "Reload",
+                { link.send(Command.Nav(if (page.loading) NavAction.STOP else NavAction.RELOAD)) },
+                Modifier.weight(1f).height(60.dp),
+            )
+            IconKey(R.drawable.ic_book_open, "Reader mode", { link.send(Command.Nav(NavAction.READER)) }, Modifier.weight(1f).height(60.dp))
+            IconKey(R.drawable.ic_keyboard, if (keyboard) "Hide keyboard" else "Keyboard", onKeyboard, Modifier.weight(1f).height(60.dp))
+            // Click shares the key row, so the trackpad gets the height a separate row would take.
+            PhysicalKey("Click", { link.send(Command.Click) }, Modifier.weight(1.9f).height(60.dp), primary = true) {
+                Text("Click", fontFamily = Grotesk, fontWeight = FontWeight.Bold, fontSize = 15.sp, color = Tok.Ground)
+            }
+        }
+        Spacer(Modifier.height(16.dp))
+    }
+
+}
+
+/** How much one press of a volume key changes the video's own volume (0 to 1). */
+private const val VOLUME_STEP = 0.05f
+
+/**
+ * Sends the phone's hardware volume buttons to [onKey] (as remote key codes) while [enabled], in place of
+ * the activity's own handling (which only knows the remote's TV keys). Hooks the window this composable
+ * is in: the activity's, or a dialog's when it sits in one.
+ */
+@Composable
+private fun VolumeButtonsTo(enabled: Boolean, onKey: (Int) -> Unit) {
+    val view = LocalView.current
+    val on by rememberUpdatedState(enabled)
+    val key by rememberUpdatedState(onKey)
+    DisposableEffect(view) {
+        val window = (view.parent as? DialogWindowProvider)?.window
+            ?: view.context.findActivity()?.window
+            ?: return@DisposableEffect onDispose {}
+        val original = window.callback
+        window.callback = object : Window.Callback by original {
+            override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+                val code = when (event.keyCode) {
+                    KeyEvent.KEYCODE_VOLUME_UP -> Keys.VOLUME_UP
+                    KeyEvent.KEYCODE_VOLUME_DOWN -> Keys.VOLUME_DOWN
+                    else -> return original.dispatchKeyEvent(event)
+                }
+                if (!on) return original.dispatchKeyEvent(event)
+                // Held buttons repeat their key-down, like holding a remote key.
+                if (event.action == KeyEvent.ACTION_DOWN) key(code)
+                return true
+            }
+        }
+        onDispose { window.callback = original }
     }
 }
 
-/** The standard playback speeds, always offered as a fixed list. */
+private tailrec fun android.content.Context.findActivity(): android.app.Activity? = when (this) {
+    is android.app.Activity -> this
+    is android.content.ContextWrapper -> baseContext.findActivity()
+    else -> null
+}
+
+/** The playback speeds offered, as one row so the current one is always visible. */
 private val SPEEDS = listOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f)
 
 /** 0.75 -> "0.75×", 1 -> "1×". */
 private fun speedLabel(rate: Float): String =
     java.lang.String.format(java.util.Locale.ROOT, "%.2f", rate).trimEnd('0').trimEnd('.') + "×"
 
-private fun speedMenuLabel(rate: Float): String = if (rate == 1f) "Normal (1×)" else speedLabel(rate)
-
 /**
- * Remote control for the video that is full screen on the TV ("Browser: video player" in the design).
- * Nothing is drawn on the TV; every key here is sent to the player in the page.
+ * The Video tab: remote control for the video playing on the TV. Nothing is drawn on the TV.
+ *
+ * Ordered by how often each control is used and where the thumb rests. What is playing sits at the top
+ * and is only read. The controls fill the lower part of the screen: a small pointer pad for the player's
+ * own buttons, the scrubber and the transport keys (used all the time), then sound and speed under their
+ * own labels, and the rare actions (note, full screen) last. Every setting shows its current value
+ * without opening a menu.
  */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun PlayerPanel(
     video: VideoState,
     page: BrowserState,
     link: BrowserLink,
     onTvKey: (Int) -> Unit,
-    tvKeysEnabled: Boolean,
+    tvVolume: Boolean,
+    pointerSpeed: () -> Float,
+    active: Boolean,
     onNote: () -> Unit,
 ) {
     val known = video.position >= 0f
+    // The TV's volume through the remote link when the Chromecast passes volume keys on. When it doesn't
+    // (HDMI-CEC volume control off, or the remote isn't connected), the video's own volume instead, so
+    // the rocker still does something.
+    val pageVolume = !tvVolume && known
+    val volumeKey: (Int) -> Unit = { code ->
+        if (tvVolume) {
+            onTvKey(code)
+        } else if (pageVolume) {
+            // Also send the TV key (a no-op without the remote). If volume control has been switched on
+            // since the Chromecast last said it was off, the key works and the Chromecast's next volume
+            // report flips this panel back to TV volume; while it's off the key is simply ignored.
+            onTvKey(code)
+            when (code) {
+                Keys.VOLUME_UP -> link.send(Command.Video(VideoAction.VOLUME, VOLUME_STEP))
+                Keys.VOLUME_DOWN -> link.send(Command.Video(VideoAction.VOLUME, -VOLUME_STEP))
+                Keys.MUTE -> link.send(Command.Video(VideoAction.MUTE))
+            }
+        }
+    }
+    VolumeButtonsTo(enabled = active && (tvVolume || pageVolume), onKey = volumeKey)
+
     var dragging by remember { mutableStateOf(false) }
     var dragTo by remember { mutableFloatStateOf(0f) }
     var pendingSeek by remember { mutableStateOf<Float?>(null) }
@@ -467,7 +526,6 @@ private fun PlayerPanel(
         pendingSeek?.let { if (kotlin.math.abs(video.position - it) < 2f) pendingSeek = null }
     }
     // Same for the speed: show what was chosen at once, so quick taps never act on a stale reading.
-    var speedOpen by remember { mutableStateOf(false) }
     var pendingRate by remember { mutableStateOf<Float?>(null) }
     LaunchedEffect(pendingRate) {
         if (pendingRate != null) {
@@ -484,181 +542,235 @@ private fun PlayerPanel(
         pendingSeek != null -> pendingSeek!!
         else -> video.position
     }
-    val scrubColors = SliderDefaults.colors(
+    val host = remember(page.url) { runCatching { android.net.Uri.parse(page.url).host }.getOrNull().orEmpty().removePrefix("www.") }
+
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val screen = maxHeight
+        Column(
+            Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).heightIn(min = screen)
+                .padding(horizontal = 20.dp).padding(top = 18.dp, bottom = 20.dp),
+            // Information at the top, controls pushed down into thumb reach; scrolls on short screens.
+            verticalArrangement = Arrangement.SpaceBetween,
+        ) {
+            NowPlaying(video, title = page.title.ifBlank { host.ifBlank { "Video" } }, host = host)
+
+            Column(Modifier.fillMaxWidth().padding(top = 24.dp)) {
+                // A small pad for the pointer, for the player's own buttons on the TV (skip intro, quality,
+                // next episode) without leaving this tab. Tap to click; swiping here moves the pointer.
+                Trackpad(
+                    link,
+                    speed = pointerSpeed,
+                    hint = "Move the pointer · Tap to click",
+                    modifier = Modifier.fillMaxWidth().height(120.dp),
+                )
+                Spacer(Modifier.height(18.dp))
+                when {
+                    known && video.duration > 0f -> Scrubber(
+                        shown = shown,
+                        video = video,
+                        rate = rate,
+                        dragging = dragging,
+                        onDrag = { dragging = true; dragTo = it },
+                        onRelease = {
+                            dragging = false
+                            pendingSeek = dragTo
+                            link.send(Command.Video(VideoAction.SEEK, dragTo))
+                        },
+                    )
+                    known -> Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            "LIVE",
+                            style = MaterialTheme.typography.labelMedium.copy(letterSpacing = 1.sp),
+                            color = Tok.Ground,
+                            modifier = Modifier.background(Tok.Fault, RoundedCornerShape(6.dp)).padding(horizontal = 8.dp, vertical = 3.dp),
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        Text(formatClock(video.position), fontFamily = Mono, fontSize = 14.sp, color = Tok.Bone)
+                    }
+                    else -> Text(
+                        "This player doesn't share its position, so only play and pause can be sent.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Tok.Dim,
+                    )
+                }
+
+                Spacer(Modifier.height(18.dp))
+                Transport(video, enabled = known, send = link::send)
+
+                PanelSection("Sound", trailing = when {
+                    tvVolume -> "TV volume"
+                    pageVolume -> "Video volume"
+                    else -> null
+                }) {
+                    VolumeRocker(volumeKey, enabled = tvVolume || pageVolume, vertical = false, modifier = Modifier.fillMaxWidth().height(56.dp))
+                    if (!tvVolume) {
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            if (pageVolume) "HDMI-CEC volume control is off on this Chromecast, so this changes the video's own volume, up to the TV's level."
+                            else "HDMI-CEC volume control is off on this Chromecast, and this player doesn't share its volume.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Tok.Dim,
+                        )
+                    }
+                }
+
+                if (known) {
+                    PanelSection("Speed", trailing = if (kotlin.math.abs(rate - 1f) < 0.01f) "Normal" else speedLabel(rate)) {
+                        Segmented(
+                            options = SPEEDS.map(::speedLabel),
+                            selected = SPEEDS.indexOfFirst { kotlin.math.abs(it - rate) < 0.01f },
+                            onSelect = { i ->
+                                pendingRate = SPEEDS[i]
+                                link.send(Command.Video(VideoAction.RATE, SPEEDS[i]))
+                            },
+                            height = 44.dp,
+                        )
+                    }
+                }
+
+                Spacer(Modifier.height(24.dp))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    PillButton(
+                        if (known && !video.isLive) "Note at ${formatClock(video.position)}" else "Quick note",
+                        onNote,
+                        Modifier.weight(1f),
+                        icon = R.drawable.ic_sticky_note,
+                        height = 52.dp,
+                    )
+                    // One button for the screen mode: full screen when the video is in the page, back out when it's full.
+                    PillButton(
+                        if (video.fullscreen) "Exit full screen" else "Full screen",
+                        { link.send(Command.Video(if (video.fullscreen) VideoAction.EXIT_FULLSCREEN else VideoAction.FULLSCREEN)) },
+                        Modifier.weight(1f),
+                        icon = if (video.fullscreen) R.drawable.ic_x else R.drawable.ic_maximize,
+                        height = 52.dp,
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** What is playing: the player and its state, the title, the site. Read, never touched. */
+@Composable
+private fun NowPlaying(video: VideoState, title: String, host: String) {
+    Column(Modifier.fillMaxWidth()) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(8.dp).background(if (video.playing) Tok.Signal else Tok.Dim, CircleShape))
+            Spacer(Modifier.width(8.dp))
+            Text(
+                listOfNotNull(
+                    if (video.fullscreen) "FULL SCREEN" else "IN THE PAGE",
+                    when {
+                        video.position < 0f -> null
+                        video.playing -> "PLAYING"
+                        else -> "PAUSED"
+                    },
+                ).joinToString(" · "),
+                style = MaterialTheme.typography.labelMedium.copy(letterSpacing = 1.sp),
+                color = Tok.Dim,
+            )
+        }
+        Spacer(Modifier.height(10.dp))
+        Text(
+            title,
+            style = MaterialTheme.typography.titleLarge.copy(fontSize = 22.sp, lineHeight = 27.sp),
+            color = Tok.Bone,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+        )
+        if (host.isNotEmpty()) {
+            Spacer(Modifier.height(4.dp))
+            Text(host, fontFamily = Mono, fontSize = 13.sp, color = Tok.Dim, maxLines = 1)
+        }
+    }
+}
+
+/** Position bar with elapsed time, when it ends (at the current speed) and the length. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun Scrubber(
+    shown: Float,
+    video: VideoState,
+    rate: Float,
+    dragging: Boolean,
+    onDrag: (Float) -> Unit,
+    onRelease: () -> Unit,
+) {
+    val colors = SliderDefaults.colors(
         thumbColor = Tok.Signal,
         activeTrackColor = Tok.Signal,
         inactiveTrackColor = Tok.Key,
         activeTickColor = Tok.Signal,
         inactiveTickColor = Tok.Key,
     )
-    val host = remember(page.url) { runCatching { android.net.Uri.parse(page.url).host }.getOrNull().orEmpty().removePrefix("www.") }
-
-    Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp)) {
-        Column(Modifier.fillMaxWidth().padding(top = 6.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.size(8.dp).background(if (video.playing) Tok.Signal else Tok.Dim, CircleShape))
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    when {
-                        video.native && video.playing -> "TV PLAYER · PLAYING"
-                        video.native -> "TV PLAYER · PAUSED"
-                        !known -> "FULL SCREEN VIDEO"
-                        video.playing -> "NOW PLAYING"
-                        else -> "PAUSED"
-                    },
-                    style = MaterialTheme.typography.labelMedium.copy(letterSpacing = 1.sp),
-                    color = Tok.Dim,
-                )
-            }
-            Spacer(Modifier.height(10.dp))
-            Text(
-                page.title.ifBlank { host.ifBlank { "Video" } },
-                style = MaterialTheme.typography.titleLarge.copy(fontSize = 22.sp, lineHeight = 26.sp),
-                color = Tok.Bone,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
+    val context = LocalContext.current
+    val endsAt = endsAtMillis(System.currentTimeMillis(), shown, video.duration, rate)
+        ?.let { android.text.format.DateFormat.getTimeFormat(context).format(java.util.Date(it)) }
+    Slider(
+        value = shown.coerceIn(0f, video.duration),
+        onValueChange = onDrag,
+        onValueChangeFinished = onRelease,
+        valueRange = 0f..video.duration,
+        colors = colors,
+        // The design's round knob on a flat track, a little larger while held so the finger doesn't hide it.
+        thumb = { Box(Modifier.size(if (dragging) 28.dp else 22.dp).background(Tok.Signal, CircleShape)) },
+        track = { state ->
+            SliderDefaults.Track(
+                sliderState = state,
+                colors = colors,
+                thumbTrackGapSize = 0.dp,
+                trackInsideCornerSize = 0.dp,
+                drawStopIndicator = null,
+                modifier = Modifier.height(6.dp),
             )
-            if (host.isNotEmpty()) {
-                Spacer(Modifier.height(4.dp))
-                Text(host, fontFamily = Mono, fontSize = 13.sp, color = Tok.Dim, maxLines = 1)
-            }
-            Spacer(Modifier.height(18.dp))
-            when {
-                known && video.duration > 0f -> {
-                    Slider(
-                        value = shown.coerceIn(0f, video.duration),
-                        onValueChange = { dragging = true; dragTo = it },
-                        onValueChangeFinished = {
-                            dragging = false
-                            pendingSeek = dragTo
-                            link.send(Command.Video(VideoAction.SEEK, dragTo))
-                        },
-                        valueRange = 0f..video.duration,
-                        colors = scrubColors,
-                        // The design's round knob on a flat 6dp track, not Material's bar thumb and gap.
-                        thumb = { Box(Modifier.size(22.dp).background(Tok.Signal, CircleShape)) },
-                        track = { state ->
-                            SliderDefaults.Track(
-                                sliderState = state,
-                                colors = scrubColors,
-                                thumbTrackGapSize = 0.dp,
-                                trackInsideCornerSize = 0.dp,
-                                drawStopIndicator = null,
-                                modifier = Modifier.height(6.dp),
-                            )
-                        },
-                    )
-                    Row(Modifier.fillMaxWidth()) {
-                        Text(formatClock(shown), fontFamily = Mono, fontSize = 13.sp, color = Tok.Bone)
-                        Spacer(Modifier.weight(1f))
-                        Text(formatClock(video.duration), fontFamily = Mono, fontSize = 13.sp, color = Tok.Dim)
-                    }
-                }
-                known -> Text("Live · ${formatClock(video.position)}", fontFamily = Mono, fontSize = 13.sp, color = Tok.Bone)
-                else -> Text(
-                    "This player doesn't share its position, so only play and pause can be sent.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = Tok.Dim,
-                )
-            }
-        }
+        },
+        modifier = Modifier.semantics { contentDescription = "Position ${formatClock(shown)} of ${formatClock(video.duration)}" },
+    )
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        // While dragging, the time to jump to stands out: it is what will happen on release.
+        Text(formatClock(shown), fontFamily = Mono, fontSize = 13.sp, color = if (dragging) Tok.Signal else Tok.Bone)
+        Spacer(Modifier.weight(1f))
+        if (endsAt != null) Text("Ends $endsAt", style = MaterialTheme.typography.bodySmall, color = Tok.Dim)
+        Spacer(Modifier.weight(1f))
+        Text(formatClock(video.duration), fontFamily = Mono, fontSize = 13.sp, color = Tok.Dim)
+    }
+}
 
-        Spacer(Modifier.height(22.dp))
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            PhysicalKey("Back 10 seconds", { link.send(Command.Video(VideoAction.SKIP, -10f)) }, Modifier.weight(1f).height(66.dp), enabled = known) {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Ico(R.drawable.ic_rewind, size = 24.dp)
-                    Text("10", fontFamily = Mono, fontWeight = FontWeight.Medium, fontSize = 14.sp, color = Tok.Bone)
-                }
-            }
-            PhysicalKey(
-                if (video.playing) "Pause" else "Play",
-                { link.send(Command.Video(VideoAction.TOGGLE)) },
-                Modifier.weight(1.5f).height(66.dp),
-                primary = true,
-            ) { Ico(if (video.playing) R.drawable.ic_pause else R.drawable.ic_play, tint = Tok.Ground, size = 28.dp) }
-            PhysicalKey("Forward 10 seconds", { link.send(Command.Video(VideoAction.SKIP, 10f)) }, Modifier.weight(1f).height(66.dp), enabled = known) {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text("10", fontFamily = Mono, fontWeight = FontWeight.Medium, fontSize = 14.sp, color = Tok.Bone)
-                    Ico(R.drawable.ic_fast_forward, size = 24.dp)
-                }
+/** Back 10 s, play or pause (the one yellow key, largest and in the middle), forward 10 s. */
+@Composable
+private fun Transport(video: VideoState, enabled: Boolean, send: (Command) -> Unit) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+        PhysicalKey("Back 10 seconds", { send(Command.Video(VideoAction.SKIP, -10f)) }, Modifier.weight(1f).height(64.dp), enabled = enabled) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Ico(R.drawable.ic_rewind, size = 24.dp)
+                Text("10", fontFamily = Mono, fontWeight = FontWeight.Medium, fontSize = 14.sp, color = Tok.Bone)
             }
         }
-        Spacer(Modifier.height(10.dp))
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            // The TV's own volume through the remote link, not the video element's: one rocker, apart from speed.
-            VolumeRocker(onTvKey, enabled = tvKeysEnabled, vertical = false, modifier = Modifier.weight(2f).height(56.dp))
-            Box(Modifier.weight(1f)) {
-                PhysicalKey(
-                    "Playback speed ${speedLabel(rate)}",
-                    { speedOpen = true },
-                    Modifier.fillMaxWidth().height(56.dp),
-                    enabled = known,
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Ico(R.drawable.ic_gauge, size = 18.dp)
-                        Spacer(Modifier.width(6.dp))
-                        Text(speedLabel(rate), fontFamily = Mono, fontWeight = FontWeight.Medium, fontSize = 14.sp, color = Tok.Bone)
-                    }
-                }
-                PanelMenu(
-                    expanded = speedOpen,
-                    onDismiss = { speedOpen = false },
-                    items = SPEEDS.map { s ->
-                        MenuItem(speedMenuLabel(s), selected = kotlin.math.abs(s - rate) < 0.01f) {
-                            pendingRate = s
-                            link.send(Command.Video(VideoAction.RATE, s))
-                        }
-                    },
-                )
+        PhysicalKey(
+            if (video.playing) "Pause" else "Play",
+            { send(Command.Video(VideoAction.TOGGLE)) },
+            Modifier.weight(1.4f).height(76.dp),
+            primary = true,
+        ) { Ico(if (video.playing) R.drawable.ic_pause else R.drawable.ic_play, tint = Tok.Ground, size = 32.dp) }
+        PhysicalKey("Forward 10 seconds", { send(Command.Video(VideoAction.SKIP, 10f)) }, Modifier.weight(1f).height(64.dp), enabled = enabled) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text("10", fontFamily = Mono, fontWeight = FontWeight.Medium, fontSize = 14.sp, color = Tok.Bone)
+                Ico(R.drawable.ic_fast_forward, size = 24.dp)
             }
         }
-        video.subtitleOffset?.let { offset ->
-            Spacer(Modifier.height(10.dp))
-            // Shift subtitles when they come early or late. Only the TV player draws its own subtitles.
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                PhysicalKey("Subtitles earlier by half a second", { link.send(Command.Video(VideoAction.SUBTITLE_SHIFT, -0.5f)) }, Modifier.weight(1f).height(56.dp)) {
-                    Text("−0.5 s", fontFamily = Mono, fontWeight = FontWeight.Medium, fontSize = 14.sp, color = Tok.Bone)
-                }
-                Column(Modifier.weight(1.4f), horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("Subtitles", style = MaterialTheme.typography.labelMedium, color = Tok.Dim)
-                    Text(
-                        when {
-                            kotlin.math.abs(offset) < 0.05f -> "on time"
-                            offset > 0 -> java.lang.String.format(java.util.Locale.ROOT, "%.1f s later", offset)
-                            else -> java.lang.String.format(java.util.Locale.ROOT, "%.1f s earlier", -offset)
-                        },
-                        fontFamily = Mono,
-                        fontSize = 14.sp,
-                        color = Tok.Bone,
-                    )
-                }
-                PhysicalKey("Subtitles later by half a second", { link.send(Command.Video(VideoAction.SUBTITLE_SHIFT, 0.5f)) }, Modifier.weight(1f).height(56.dp)) {
-                    Text("+0.5 s", fontFamily = Mono, fontWeight = FontWeight.Medium, fontSize = 14.sp, color = Tok.Bone)
-                }
-            }
+    }
+}
+
+/** A labelled group in the Video tab, with the setting's current value on the right. */
+@Composable
+private fun PanelSection(title: String, trailing: String? = null, content: @Composable () -> Unit) {
+    Column(Modifier.fillMaxWidth().padding(top = 22.dp)) {
+        Row(Modifier.fillMaxWidth().padding(bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(title.uppercase(), style = MaterialTheme.typography.labelMedium.copy(letterSpacing = 1.sp), color = Tok.Dim, modifier = Modifier.weight(1f))
+            if (trailing != null) Text(trailing, fontFamily = Mono, fontSize = 13.sp, color = Tok.Bone)
         }
-        Spacer(Modifier.height(10.dp))
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            PillButton(if (known && !video.isLive) "Note at ${formatClock(video.position)}" else "Quick note", onNote, Modifier.weight(1f), icon = R.drawable.ic_sticky_note, height = 56.dp)
-            PillButton(
-                if (video.native) "Back to the page" else "Exit full screen",
-                { link.send(Command.Video(VideoAction.EXIT_FULLSCREEN)) },
-                Modifier.weight(1f),
-                icon = R.drawable.ic_x,
-                height = 56.dp,
-            )
-        }
-        Spacer(Modifier.height(14.dp))
-        Text(
-            "Swipe down for the trackpad. The TV shows only the video.",
-            style = MaterialTheme.typography.bodySmall,
-            color = Tok.Dim,
-            textAlign = TextAlign.Center,
-            modifier = Modifier.fillMaxWidth(),
-        )
-        Spacer(Modifier.height(24.dp))
-        Spacer(Modifier.navigationBarsPadding())
+        content()
     }
 }
 
@@ -702,7 +814,12 @@ private fun AddressBar(page: BrowserState, onGo: (String) -> Unit) {
 }
 
 @Composable
-private fun Trackpad(link: BrowserLink, speed: () -> Float, modifier: Modifier) {
+private fun Trackpad(
+    link: BrowserLink,
+    speed: () -> Float,
+    modifier: Modifier,
+    hint: String = "One finger moves the cursor · Tap to click\nScroll with two fingers or the side strip",
+) {
     val density = LocalDensity.current.density
     val haptics = LocalHapticFeedback.current
     val currentLink by rememberUpdatedState(link)
@@ -720,7 +837,7 @@ private fun Trackpad(link: BrowserLink, speed: () -> Float, modifier: Modifier) 
         }
     }
     TrailPad(
-        hint = "One finger moves the cursor · Tap to click\nScroll with two fingers or the side strip",
+        hint = hint,
         modifier = modifier.semantics {
             contentDescription = "Trackpad. Drag to move the pointer, tap to click, drag with two fingers to scroll."
         },
