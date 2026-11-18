@@ -129,9 +129,7 @@ fun BrowserScreen(
     prefs: Prefs,
     notes: WatchNotes,
     onOpenBrowserOnTv: () -> Unit,
-    onTvKey: (Int) -> Unit,
     tvKeysEnabled: Boolean,
-    tvVolume: Boolean,
     onBack: () -> Unit,
 ) {
     val state by link.state.collectAsState()
@@ -195,7 +193,7 @@ fun BrowserScreen(
                 // Shorter keys: this keypad shares the screen with the tab bar.
                 keyHeight = 54.dp,
             )
-            is LinkState.Ready -> Controls(link, page, video, prefs, notes, tvName = tv.name, onTvKey = onTvKey, tvKeysEnabled = tvKeysEnabled, tvVolume = tvVolume)
+            is LinkState.Ready -> Controls(link, page, video, prefs, notes, tvName = tv.name)
             else -> {
                 val (status, lamp) = when (s) {
                     LinkState.Connecting, LinkState.Idle -> "Connecting to ${tv.name}…" to Lamp.Busy
@@ -247,13 +245,7 @@ private fun Controls(
     prefs: Prefs,
     notes: WatchNotes,
     tvName: String,
-    onTvKey: (Int) -> Unit,
-    tvKeysEnabled: Boolean,
-    tvVolume: Boolean,
 ) {
-    // What the volume keys change on the Video tab: the person's choice, or the Chromecast's guess until then.
-    var videoVolumePick by remember { mutableStateOf(prefs.videoVolume) }
-    val videoVolume = videoVolumePick ?: !tvVolume
     // Two tabs, Trackpad and Video, side by side in a pager: tap a tab or swipe across. The Video tab
     // exists while the TV reports a video, and opens by itself when that video goes full screen.
     val fullscreen = video?.fullscreen == true
@@ -326,10 +318,7 @@ private fun Controls(
     ) { pageIndex ->
         if (pageIndex == VIDEO_PAGE && video != null) {
             PlayerPanel(
-                video, page, link, onTvKey,
-                tvConnected = tvKeysEnabled,
-                videoVolume = videoVolume,
-                onVideoVolume = { prefs.videoVolume = it; videoVolumePick = it },
+                video, page, link,
                 pointerSpeed = { speed },
                 // Only the tab on screen takes the phone's volume buttons.
                 active = pager.currentPage == VIDEO_PAGE,
@@ -498,31 +487,20 @@ private fun PlayerPanel(
     video: VideoState,
     page: BrowserState,
     link: BrowserLink,
-    onTvKey: (Int) -> Unit,
-    tvConnected: Boolean,
-    videoVolume: Boolean,
-    onVideoVolume: (Boolean) -> Unit,
     pointerSpeed: () -> Float,
     active: Boolean,
     onNote: () -> Unit,
 ) {
     val known = video.position >= 0f
-    // TV volume goes to the TV as HDMI-CEC volume keys, which some TVs acknowledge and then ignore.
-    // Video volume changes the video's own sound in the page, which works with any TV but can't go
-    // above the TV's current level. The person picks; the Chromecast's own report is only the default.
-    val volumeWorks = if (videoVolume) known else tvConnected
+    // Volume here is the video's own sound in the page: it works with any TV, up to the TV's current level.
     val volumeKey: (Int) -> Unit = { code ->
-        if (!videoVolume) {
-            onTvKey(code)
-        } else if (known) {
-            when (code) {
-                Keys.VOLUME_UP -> link.send(Command.Video(VideoAction.VOLUME, VOLUME_STEP))
-                Keys.VOLUME_DOWN -> link.send(Command.Video(VideoAction.VOLUME, -VOLUME_STEP))
-                Keys.MUTE -> link.send(Command.Video(VideoAction.MUTE))
-            }
+        when (code) {
+            Keys.VOLUME_UP -> link.send(Command.Video(VideoAction.VOLUME, VOLUME_STEP))
+            Keys.VOLUME_DOWN -> link.send(Command.Video(VideoAction.VOLUME, -VOLUME_STEP))
+            Keys.MUTE -> link.send(Command.Video(VideoAction.MUTE))
         }
     }
-    VolumeButtonsTo(enabled = active && volumeWorks, onKey = volumeKey)
+    VolumeButtonsTo(enabled = active && known, onKey = volumeKey)
 
     var dragging by remember { mutableStateOf(false) }
     var dragTo by remember { mutableFloatStateOf(0f) }
@@ -610,22 +588,10 @@ private fun PlayerPanel(
                 Transport(video, enabled = known, send = link::send)
 
                 PanelSection("Sound") {
-                    Segmented(
-                        options = listOf("TV volume", "Video volume"),
-                        selected = if (videoVolume) 1 else 0,
-                        onSelect = { onVideoVolume(it == 1) },
-                        height = 40.dp,
-                    )
-                    Spacer(Modifier.height(10.dp))
-                    VolumeRocker(volumeKey, enabled = volumeWorks, vertical = false, modifier = Modifier.fillMaxWidth().height(56.dp))
+                    VolumeRocker(volumeKey, enabled = known, vertical = false, modifier = Modifier.fillMaxWidth().height(56.dp))
                     Spacer(Modifier.height(8.dp))
                     Text(
-                        when {
-                            videoVolume && known -> "Changes the video's own sound. Works with any TV, up to the TV's current level."
-                            videoVolume -> "This player doesn't share its volume. Use TV volume."
-                            !tvConnected -> "The remote isn't connected to the TV. Connect on the Remote tab, or use Video volume."
-                            else -> "Sent to the TV over HDMI-CEC. If the TV's volume doesn't change, your TV ignores it: use Video volume."
-                        },
+                        if (known) "Changes the video's own sound, up to the TV's current level." else "This player doesn't share its volume.",
                         style = MaterialTheme.typography.bodySmall,
                         color = Tok.Dim,
                     )

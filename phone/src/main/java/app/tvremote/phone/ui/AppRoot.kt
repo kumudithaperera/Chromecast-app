@@ -112,11 +112,7 @@ fun AppRoot(controller: TvController, discovery: TvDiscovery, browser: BrowserLi
                         prefs = prefs,
                         notes = notes,
                         onOpenBrowserOnTv = { controller.launch("tvbrowser://home") },
-                        onTvKey = controller::key,
                         tvKeysEnabled = ui.connection is Connection.Connected,
-                        // The Chromecast's own guess: it hasn't said it drops volume keys (HDMI-CEC volume off).
-                        // A TV can still ignore them, so the Video tab lets the person choose.
-                        tvVolume = ui.connection is Connection.Connected && ui.volumeControl != false,
                         onBack = onBack,
                     )
                 },

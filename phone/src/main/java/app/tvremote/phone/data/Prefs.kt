@@ -50,14 +50,6 @@ class Prefs(context: Context) {
 
     fun clearBrowserCredential(host: String) = sp.edit().remove("bcred_$host").apply()
 
-    /**
-     * What the Video tab's volume keys change: true for the video's own volume, false for the TV's
-     * (over HDMI-CEC), null until the person picks (then the Chromecast's own report decides).
-     */
-    var videoVolume: Boolean?
-        get() = if (sp.contains("video_volume")) sp.getBoolean("video_volume", false) else null
-        set(value) = sp.edit().apply { if (value == null) remove("video_volume") else putBoolean("video_volume", value) }.apply()
-
     /** Trackpad speed multiplier, 0.5 to 2.0. */
     var trackpadSpeed: Float
         get() = sp.getFloat("trackpad_speed", 1f)
