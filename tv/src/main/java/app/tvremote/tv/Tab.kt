@@ -19,7 +19,9 @@ import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.webkit.ScriptHandler
-import app.tvremote.protocol.HostBlocklist
+import app.tvremote.protocol.AdFilter
+import app.tvremote.protocol.PageFlags
+import app.tvremote.protocol.ReqType
 import app.tvremote.protocol.isWebUrl
 import app.tvremote.protocol.siteOf
 import org.json.JSONObject
@@ -39,15 +41,25 @@ class Tab(
     desktop: Boolean,
     /** True when another tab opened this one with window.open. */
     val isPopup: Boolean = false,
+    /** For a popup: the host of the page that opened it, for the pop-up rules. */
+    private val openerHost: String = "",
 ) {
     interface Owner {
-        val blocklist: HostBlocklist
+        /** The ad filter in use; [AdFilter.EMPTY] when ad blocking is off. Read off the main thread. */
+        val adFilter: AdFilter
+
+        /** Element hiding and scriptlets are on. Read off the main thread. */
+        val hideElements: Boolean
+        val scriptletsOn: Boolean
 
         /** Per-site zoom and the site helpers. */
         val siteScripts: SiteScripts
 
         /** True when the person turned ad blocking off for [site]. Called off the main thread. */
         fun adsAllowed(site: String): Boolean
+
+        /** The sites where the person turned ad blocking off. */
+        val allowedSites: Set<String>
 
         /** SystemClock.uptimeMillis() of the last click the person made. */
         val lastUserActionAt: Long
@@ -119,12 +131,34 @@ class Tab(
     @Volatile var pageSite: String = ""
         private set
 
+    /** The host of the page in this tab, "" for our own pages. Read off the main thread. */
+    @Volatile var pageHost: String = ""
+        private set
+
+    /** The page exceptions the lists make for the page in this tab ([PageFlags]). */
+    @Volatile private var pageFlags: Int = 0
+
+    /** The page address we refused to load, so its load error isn't shown as a broken page. */
+    @Volatile private var blockedMainUrl: String = ""
+
+    /** Element hiding and scriptlets for this tab's pages. */
+    private val ads = AdScripts(context, web, object : AdScripts.Owner {
+        override val adFilter: AdFilter get() = owner.adFilter
+        override val hideElements: Boolean get() = owner.hideElements
+        override val scriptletsOn: Boolean get() = owner.scriptletsOn
+        override val pageFlags: Int get() = this@Tab.pageFlags
+        override val allowedSites: Set<String> get() = owner.allowedSites
+        override fun blockingOnPage(): Boolean = this@Tab.blockingOnPage()
+    })
+
     val userAgent: String get() = web.settings.userAgentString
 
     private var scripts: List<ScriptHandler> = emptyList()
 
     private var committedOnce = false
-    private var allowUntil = 0L
+
+    /** Until when a navigation the person allowed goes through. Read off the main thread. */
+    @Volatile private var allowUntil = 0L
     private val appContext = context.applicationContext
 
     init {
@@ -142,6 +176,15 @@ class Tab(
     fun reinstallScripts() {
         scripts.forEach { it.remove() }
         scripts = owner.siteScripts.install(web)
+    }
+
+    /** The ad settings, lists or allowed sites changed: the page scripts follow from the next page load. */
+    fun adsChanged() = ads.install()
+
+    /** False when nothing is blocked on the page in this tab: our own pages, an allowed site, a page exception. */
+    private fun blockingOnPage(): Boolean {
+        val site = pageSite
+        return site.isNotEmpty() && !owner.adsAllowed(site) && pageFlags and PageFlags.NO_BLOCKING == 0
     }
 
     private fun configure() {
@@ -303,6 +346,7 @@ class Tab(
     fun destroy() {
         scripts.forEach { it.remove() }
         scripts = emptyList()
+        ads.destroy()
         web.stopLoading()
         web.webViewClient = WebViewClient()
         web.webChromeClient = null
@@ -358,21 +402,36 @@ class Tab(
 
     private inner class Client : WebViewClient() {
         override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
+            val uri = request.url
+            val target = uri.toString()
+            val host = uri.host.orEmpty()
+            val filter = owner.adFilter
             // A new page starts its count here, before any of its own requests can be blocked.
             // (Resetting in onPageStarted raced with them: that callback can arrive later.)
             if (request.isForMainFrame) {
                 adsBlockedCount.set(0)
-                mainRequestUrl = request.url.toString()
-                pageSite = siteOf(request.url.host)
+                mainRequestUrl = target
+                pageSite = siteOf(host)
+                pageHost = host.lowercase()
+                pageFlags = if (host.isEmpty()) 0 else filter.pageFlags(target, host)
             }
-            val site = pageSite
-            if ((site.isNotEmpty() && owner.adsAllowed(site)) || !owner.blocklist.isBlocked(request.url.host)) {
-                return null
-            }
+            val scheme = uri.scheme
+            if (host.isEmpty() || (scheme != "https" && scheme != "http")) return null
+            if (!blockingOnPage()) return null
+            // The person allowed this page after it was refused.
+            if (request.isForMainFrame && SystemClock.uptimeMillis() < allowUntil) return null
+            val headers = request.requestHeaders
+            val accept = headers["Accept"] ?: headers["accept"]
+            val range = headers.containsKey("Range") || headers.containsKey("range")
+            val types = ReqType.guess(accept, target, request.isForMainFrame, range)
+            if (!filter.shouldBlock(target, host, pageHost, types)) return null
             adsBlockedCount.incrementAndGet()
             view.post { owner.onTabUpdated(this@Tab) }
-            if (request.isForMainFrame) view.post { block(request.url.toString(), request.url.host.orEmpty()) }
-            return WebResourceResponse("text/plain", "utf-8", 204, "No Content", emptyMap(), ByteArrayInputStream(ByteArray(0)))
+            if (request.isForMainFrame) {
+                blockedMainUrl = target
+                view.post { block(target, host) }
+            }
+            return emptyResponse()
         }
 
         override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
@@ -388,7 +447,10 @@ class Tab(
                 return true
             }
             if (!request.isForMainFrame) return false
-            if (isPopup && !committedOnce && owner.blocklist.isBlocked(request.url.host)) {
+            // A window a page opened, on its way to an ad: closed before it shows anything.
+            if (isPopup && !committedOnce && !owner.adsAllowed(siteOf(openerHost)) &&
+                owner.adFilter.shouldBlock(target, request.url.host.orEmpty(), openerHost, ReqType.POPUP)
+            ) {
                 owner.onCloseRequested(this@Tab)
                 return true
             }
@@ -411,6 +473,8 @@ class Tab(
                 if (pageUrl.startsWith(HOME_BASE)) {
                     adsBlockedCount.set(0)
                     pageSite = ""
+                    pageHost = ""
+                    pageFlags = 0
                 }
             }
             url = pageUrl
@@ -435,7 +499,7 @@ class Tab(
 
         override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
             if (!request.isForMainFrame) return
-            if (owner.blocklist.isBlocked(request.url.host)) return
+            if (request.url.toString() == blockedMainUrl) return
             showError(request.url.toString(), error.description?.toString().orEmpty())
         }
 
@@ -510,6 +574,9 @@ class Tab(
     }
 
     companion object {
+        /** What a blocked request gets: an empty answer, so the page doesn't wait for it. */
+        fun emptyResponse() = WebResourceResponse("text/plain", "utf-8", 204, "No Content", emptyMap(), ByteArrayInputStream(ByteArray(0)))
+
         const val HOME_BASE = "https://tvbrowser.invalid/"
 
         /** Links on the start page that change history. Never loaded; the tab handles them. */

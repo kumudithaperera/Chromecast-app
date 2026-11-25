@@ -26,4 +26,14 @@ class ClockTest {
         assertNull(endsAtMillis(0L, -1f, 120f, 1f)) // position unknown
         assertNull(endsAtMillis(0L, 20f, -1f, 1f)) // live
     }
+
+    @Test fun formatsTimeAgo() {
+        val now = 10_000_000_000L
+        assertEquals("never", formatAgo(0L, now))
+        assertEquals("just now", formatAgo(now - 30_000L, now))
+        assertEquals("1 minute ago", formatAgo(now - 60_000L, now))
+        assertEquals("5 hours ago", formatAgo(now - 5 * 3_600_000L, now))
+        assertEquals("2 days ago", formatAgo(now - 2 * 86_400_000L, now))
+        assertEquals("just now", formatAgo(now + 60_000L, now)) // a clock that runs ahead
+    }
 }

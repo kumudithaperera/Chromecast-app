@@ -49,10 +49,17 @@ Full license texts are in `phone/src/main/assets/licenses/` and
 
 | Data | License | How it is used |
 |---|---|---|
-| [HaGeZi DNS blocklists](https://github.com/hagezi/dns-blocklists) ("Light" and "Pop-Up Ads") | GPL-3.0 | The TV app downloads the lists over HTTPS once a week and keeps them as hashes on the device. The lists are not stored in this repository or bundled in the APK. |
+| [EasyList and EasyPrivacy](https://easylist.to/) | GPL-3.0 or CC BY-SA 3.0 | Filter lists for the Standard and Strict levels. |
+| [uBlock Origin filter lists](https://github.com/uBlockOrigin/uAssets) (filters, badware, privacy, quick fixes, unbreak, and the files `filters.txt` includes) | GPL-3.0 | Filter lists for the Standard and Strict levels, including the scriptlet rules (`##+js(…)`) that the app's own scriptlets carry out. |
+| [HaGeZi DNS blocklists](https://github.com/hagezi/dns-blocklists) ("Pop-Up Ads"; "Light" for Strict only) | GPL-3.0 | Host lists for pop-up ad networks and, at the Strict level, ad and tracker hosts. |
+
+The TV app downloads these lists over HTTPS once a week, keeps them as files on
+the device, and builds its filter from them there. None of them is stored in
+this repository or bundled in the APK.
 
 `tv/src/main/assets/blocklist.txt` is a short seed list written for this
-project. It is used only until the first download succeeds.
+project. It is the Basic level, and the only list in use until the first
+download succeeds.
 
 ## 4. Specifications and references (no code copied)
 
@@ -61,6 +68,7 @@ project. It is used only until the first download succeeds.
 | Android TV Remote v2 protocol, including the pairing ("polo") messages from AOSP's google-tv-pairing-protocol | Apache-2.0 (AOSP) | The message layout is implemented from the specification, in `phone/.../atv/Pairing.kt` and `Remote.kt`. The protobuf encoder in `phone/.../proto/Proto.kt` is hand-written. |
 | [androidtvremote2](https://github.com/tronikos/androidtvremote2) (Python, by tronikos) | Apache-2.0 | Used as a behavioral reference: the shape of the client certificate and the pairing-secret formula. The unit tests check the pairing hash against its formula. The code is a Kotlin reimplementation, not a line-by-line port. |
 
+| Adblock Plus and uBlock Origin filter syntax, and uBlock Origin's scriptlet documentation | (documentation) | The filter engine (`protocol/.../AdFilter.kt`) reads the syntax as documented. The scriptlets in `tv/src/main/assets/adblock/scriptlets.js` are this project's own code, written from the documented behavior; no uBlock Origin or AdGuard scriptlet code is copied (theirs is GPL-3.0). |
 | Bluetooth Core Specification, LE Secure Connections passkey entry (Vol 3, Part H, 2.3.5.6.3) | Bluetooth SIG specification | Design reference for the TV browser's first pairing (bit-by-bit code check). Implemented with HMAC-SHA256 in `protocol/.../Auth.kt` (`Passkey`); no code copied. |
 
 ## 5. Projects studied for ideas only
@@ -73,7 +81,8 @@ These were read during research. No code from them is in this repository.
 | tv-remote (HoangTran0410) | MIT | Survey of remote and widget features |
 | couch-tv (Seagey) | MIT | Survey of home-screen ideas |
 | mrowser (m-salehi-v) | MIT | Idea of playing sniffed streams in a native player |
-| TV Bro | see project | Considered as a browser base, not used |
+| TV Bro | custom (redistribution restricted) | Considered as a browser base, not used. Its ad blocking module showed the approach of a Kotlin filter engine for a TV WebView (request types guessed from the Accept header, element hiding by injected CSS). Its license doesn't allow reuse, so none of its code was copied. |
+| [Brave adblock-rust](https://github.com/brave/adblock-rust), [Ghostery adblocker](https://github.com/ghostery/adblocker) | MPL-2.0 | Reference engines. Ghostery's was run during development to cross-check this engine's verdicts on the same lists; it is not part of the build. |
 
 ## 6. Note on the app's own license
 

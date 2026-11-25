@@ -15,18 +15,27 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.Toast
+import androidx.webkit.ServiceWorkerClientCompat
+import androidx.webkit.ServiceWorkerControllerCompat
+import androidx.webkit.WebViewFeature
+import app.tvremote.protocol.AdBlockState
+import app.tvremote.protocol.AdFilter
+import app.tvremote.protocol.AdLevel
+import app.tvremote.protocol.AdOption
 import app.tvremote.protocol.BrowserState
 import app.tvremote.protocol.Command
 import app.tvremote.protocol.ControlHandler
 import app.tvremote.protocol.ControlServer
-import app.tvremote.protocol.HostBlocklist
 import app.tvremote.protocol.KeyName
 import app.tvremote.protocol.NavAction
 import app.tvremote.protocol.PORT
+import app.tvremote.protocol.ReqType
 import app.tvremote.protocol.TabAction
 import app.tvremote.protocol.VideoAction
 import app.tvremote.protocol.VideoState
@@ -56,7 +65,20 @@ class BrowserActivity : Activity(), Tab.Owner, ControlHandler, BrowserChrome.Act
     private lateinit var allowStore: android.content.SharedPreferences
 
     /** Sites where the person turned ad blocking off. Replaced whole, read from WebView threads. */
-    @Volatile private var allowedSites: Set<String> = emptySet()
+    @Volatile override var allowedSites: Set<String> = emptySet()
+        private set
+
+    /** The site of the tab on screen, for service worker requests (which don't say what page they are for). */
+    @Volatile private var screenSite: String = ""
+
+    /** The lists are being downloaded. */
+    private var adsUpdating = false
+
+    /** Bumped by each [loadAdLists], so an older load that finishes late is ignored. */
+    private var adLoadGen = 0
+
+    /** What the phone last heard about ad blocking, so it only hears changes. */
+    private var lastAdsSent: AdBlockState? = null
     private lateinit var fullscreen: FrameLayout
     private lateinit var cursor: CursorView
     private lateinit var chrome: BrowserChrome
@@ -95,8 +117,12 @@ class BrowserActivity : Activity(), Tab.Owner, ControlHandler, BrowserChrome.Act
     override var lastUserActionAt: Long = 0L
         private set
 
-    /** The bundled seed list at first, then the seed plus the downloaded lists. Read from WebView threads. */
-    @Volatile override var blocklist: HostBlocklist = HostBlocklist(emptyList())
+    /** Nothing at first, then the filter for the chosen level once it is built. Read from WebView threads. */
+    @Volatile override var adFilter: AdFilter = AdFilter.EMPTY
+        private set
+    @Volatile override var hideElements: Boolean = true
+        private set
+    @Volatile override var scriptletsOn: Boolean = true
         private set
     override lateinit var siteScripts: SiteScripts
         private set
@@ -116,8 +142,10 @@ class BrowserActivity : Activity(), Tab.Owner, ControlHandler, BrowserChrome.Act
         allowStore = getSharedPreferences("ads_allowed", MODE_PRIVATE)
         allowedSites = allowStore.getStringSet("sites", emptySet())!!.toSet()
         adLists = AdLists(this)
-        blocklist = adLists.seed
+        hideElements = adLists.hideElements
+        scriptletsOn = adLists.scriptlets
         loadAdLists()
+        blockServiceWorkerAds()
         buildUi()
         Thread {
             val summary = DrmInfo.widevineSummary()
@@ -246,6 +274,7 @@ class BrowserActivity : Activity(), Tab.Owner, ControlHandler, BrowserChrome.Act
             else -> "Phone control · ${ip ?: "no network"}"
         }
         val url = t?.displayUrl.orEmpty()
+        screenSite = t?.pageSite.orEmpty()
         chrome.bind(
             BrowserChrome.Model(
                 tabTitles = tabs.map { tabTitle(it) },
@@ -337,12 +366,12 @@ class BrowserActivity : Activity(), Tab.Owner, ControlHandler, BrowserChrome.Act
 
     // ---- tabs ----
 
-    private fun newTab(home: Boolean, popup: Boolean = false): Tab? {
+    private fun newTab(home: Boolean, popup: Boolean = false, openerHost: String = ""): Tab? {
         if (tabs.size >= MAX_TABS) {
             toast("Too many tabs; close one first")
             return null
         }
-        val tab = Tab(this, this, desktop, popup)
+        val tab = Tab(this, this, desktop, popup, openerHost)
         tabs.add(tab)
         select(tabs.lastIndex)
         if (home) tab.loadHome()
@@ -461,7 +490,7 @@ class BrowserActivity : Activity(), Tab.Owner, ControlHandler, BrowserChrome.Act
             opener.markBlocked("popup")
             return false
         }
-        val popup = newTab(home = false, popup = true) ?: return false
+        val popup = newTab(home = false, popup = true, openerHost = opener.pageHost) ?: return false
         val t = transport.obj as? WebView.WebViewTransport ?: return false
         t.webView = popup.web
         transport.sendToTarget()
@@ -523,7 +552,31 @@ class BrowserActivity : Activity(), Tab.Owner, ControlHandler, BrowserChrome.Act
                     helpers = siteScripts.helpersOn,
                 ),
             )
+            publishAds()
         }, 100)
+    }
+
+    /** Tells the phone the ad blocking settings and counts, if they changed. */
+    private fun publishAds(force: Boolean = false) {
+        val t = tabs.getOrNull(current)
+        val site = t?.pageSite.orEmpty()
+        val state = AdBlockState(
+            level = adLists.level,
+            hideElements = hideElements,
+            scriptlets = scriptletsOn,
+            siteHelpers = siteScripts.helpersOn,
+            rules = adFilter.ruleCount,
+            updatedAt = adLists.fetchedAt,
+            updating = adsUpdating,
+            updateFailed = adLists.lastFailed,
+            blockedOnPage = t?.adsBlocked ?: 0,
+            site = site,
+            siteAllowed = adsAllowed(site),
+            allowedSites = allowedSites.sorted(),
+        )
+        if (!force && state == lastAdsSent) return
+        lastAdsSent = state
+        server?.sendAdBlock(state)
     }
 
     // ---- ControlHandler (server threads) ----
@@ -535,6 +588,7 @@ class BrowserActivity : Activity(), Tab.Owner, ControlHandler, BrowserChrome.Act
             if (connected) {
                 publish()
                 publishVideo(force = true)
+                publishAds(force = true)
             } else {
                 refreshInfo()
             }
@@ -573,23 +627,9 @@ class BrowserActivity : Activity(), Tab.Owner, ControlHandler, BrowserChrome.Act
                 NavAction.ALLOW_BLOCKED -> tab.allowBlocked()
                 NavAction.READER -> tab.toggleReader()
                 NavAction.ADS -> toggleAds()
-                NavAction.AD_LISTS -> {
-                    adLists.enabled = !adLists.enabled
-                    if (adLists.enabled) {
-                        loadAdLists()
-                        toast("Stronger ad blocking on. Some video players may stop loading.")
-                    } else {
-                        blocklist = adLists.seed
-                        toast("Stronger ad blocking off. Only the basic list blocks.")
-                    }
-                    tab.reload()
-                }
-                NavAction.HELPERS -> {
-                    siteScripts.helpersOn = !siteScripts.helpersOn
-                    tabs.forEach { it.reinstallScripts() }
-                    toast(if (siteScripts.helpersOn) "Site helpers on (from the next page)" else "Site helpers off (from the next page)")
-                    publish()
-                }
+                // From older phone apps: switch between the basic and the standard level.
+                NavAction.AD_LISTS -> setAdLevel(if (adLists.level >= AdLevel.STANDARD) AdLevel.BASIC else AdLevel.STANDARD)
+                NavAction.HELPERS -> setHelpers(!siteScripts.helpersOn)
             }
             is Command.Go -> {
                 val target = normalizeInput(c.input)
@@ -604,6 +644,27 @@ class BrowserActivity : Activity(), Tab.Owner, ControlHandler, BrowserChrome.Act
             }
             is Command.Video -> videoCommand(tab, c)
             is Command.Zoom -> zoom(c.action)
+            is Command.AdLevelSet -> setAdLevel(c.level)
+            is Command.AdOptionSet -> when (c.option) {
+                AdOption.HIDE_ELEMENTS -> {
+                    adLists.hideElements = c.on
+                    hideElements = c.on
+                    adOptionChanged(if (c.on) "Hiding ad spaces" else "Not hiding ad spaces")
+                }
+                AdOption.SCRIPTLETS -> {
+                    adLists.scriptlets = c.on
+                    scriptletsOn = c.on
+                    adOptionChanged(if (c.on) "Anti-adblock fixes on" else "Anti-adblock fixes off")
+                }
+                AdOption.SITE_HELPERS -> setHelpers(c.on)
+            }
+            is Command.AdSite -> {
+                setSiteAllowed(c.site, c.allowed)
+                if (tab.pageSite == c.site) tab.reload()
+            }
+            Command.AdUpdate -> {
+                if (adLists.level < AdLevel.STANDARD) toast("The basic level has no lists to download") else loadAdLists(forceDownload = true)
+            }
             is Command.Desktop -> {
                 desktop = c.on
                 tabs.forEach { it.setDesktop(c.on) }
@@ -686,11 +747,46 @@ class BrowserActivity : Activity(), Tab.Owner, ControlHandler, BrowserChrome.Act
         val tab = tabs.getOrNull(current) ?: return
         val site = tab.pageSite
         if (site.isEmpty()) return
-        val allowed = site !in allowedSites
+        setSiteAllowed(site, site !in allowedSites)
+        tab.reload()
+    }
+
+    private fun setSiteAllowed(site: String, allowed: Boolean) {
+        if (allowed == site in allowedSites) return
         allowedSites = if (allowed) allowedSites + site else allowedSites - site
         allowStore.edit().putStringSet("sites", allowedSites).apply()
+        // Scriptlets already in place for that site must go.
+        tabs.forEach { it.adsChanged() }
         toast(if (allowed) "Ads allowed on $site" else "Blocking ads on $site again")
-        tab.reload()
+        publish()
+    }
+
+    private fun setAdLevel(level: AdLevel) {
+        if (level == adLists.level) return
+        adLists.level = level
+        toast(
+            when (level) {
+                AdLevel.OFF -> "Ad blocking off"
+                AdLevel.BASIC -> "Basic ad blocking"
+                AdLevel.STANDARD -> "Standard ad blocking"
+                AdLevel.STRICT -> "Strict ad blocking. Some video players may stop loading."
+            },
+        )
+        loadAdLists(reload = true)
+    }
+
+    private fun setHelpers(on: Boolean) {
+        siteScripts.helpersOn = on
+        tabs.forEach { it.reinstallScripts() }
+        toast(if (on) "Site helpers on (from the next page)" else "Site helpers off (from the next page)")
+        publish()
+    }
+
+    /** Element hiding or scriptlets were turned on or off: the page on screen loads again with the change. */
+    private fun adOptionChanged(message: String) {
+        tabs.forEach { it.adsChanged() }
+        toast(message)
+        tabs.getOrNull(current)?.takeIf { !it.isHome }?.reload()
         publish()
     }
 
@@ -716,15 +812,68 @@ class BrowserActivity : Activity(), Tab.Owner, ControlHandler, BrowserChrome.Act
         publish()
     }
 
-    /** Reads the saved list, then downloads a fresh one if it's a week old. Never on the main thread. */
-    private fun loadAdLists() {
-        if (!adLists.enabled) return
+    /**
+     * Builds the filter for the chosen level from the lists on disk, then downloads them if they are missing
+     * or a week old (or [forceDownload]) and builds again. Never on the main thread. With [reload] the page
+     * on screen loads again once the first filter is in place.
+     */
+    private fun loadAdLists(forceDownload: Boolean = false, reload: Boolean = false) {
+        val gen = ++adLoadGen
+        val level = adLists.level
+        val download = level >= AdLevel.STANDARD && (forceDownload || adLists.isStale(level))
+        adsUpdating = download
+        publishAds()
+        val allowed = allowedSites
+        val app = applicationContext
         Thread {
-            adLists.loadSaved()?.let { saved -> ui.post { if (adLists.enabled) blocklist = adLists.seed + saved } }
-            if (adLists.isStale()) {
-                adLists.download()?.let { fresh -> ui.post { if (adLists.enabled) blocklist = adLists.seed + fresh } }
+            val built = adLists.build(level)
+            if (scriptletsOn) AdScripts.prepare(app, built, allowed)
+            ui.post {
+                if (gen != adLoadGen) return@post
+                applyFilter(built)
+                if (reload) tabs.getOrNull(current)?.takeIf { !it.isHome }?.reload()
+            }
+            if (!download) return@Thread
+            val ok = adLists.download(level)
+            val fresh = adLists.build(level)
+            if (scriptletsOn) AdScripts.prepare(app, fresh, allowed)
+            ui.post {
+                if (gen != adLoadGen) return@post
+                adsUpdating = false
+                applyFilter(fresh)
+                if (forceDownload) toast(if (ok) "Ad lists updated" else "Couldn't download every ad list. The last good copies stay in use.")
             }
         }.apply { priority = Thread.MIN_PRIORITY }.start()
+    }
+
+    private fun applyFilter(filter: AdFilter) {
+        adFilter = filter
+        tabs.forEach { it.adsChanged() }
+        refreshInfo()
+        publishAds()
+    }
+
+    /**
+     * Service workers fetch outside any tab, so their requests need a client of their own. They don't say
+     * which page they work for: only rules that don't depend on the page apply, and nothing is blocked
+     * while the site on screen has ads allowed.
+     */
+    private fun blockServiceWorkerAds() {
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.SERVICE_WORKER_BASIC_USAGE) ||
+            !WebViewFeature.isFeatureSupported(WebViewFeature.SERVICE_WORKER_SHOULD_INTERCEPT_REQUEST)
+        ) return
+        ServiceWorkerControllerCompat.getInstance().setServiceWorkerClient(object : ServiceWorkerClientCompat() {
+            override fun shouldInterceptRequest(request: WebResourceRequest): WebResourceResponse? {
+                val uri = request.url
+                val host = uri.host ?: return null
+                if (uri.scheme != "https" && uri.scheme != "http") return null
+                val site = screenSite
+                if (site.isNotEmpty() && adsAllowed(site)) return null
+                val headers = request.requestHeaders
+                val types = ReqType.guess(headers["Accept"] ?: headers["accept"], uri.toString(), false, headers.containsKey("Range"))
+                return if (adFilter.shouldBlock(uri.toString(), host, "", types)) Tab.emptyResponse() else null
+            }
+        })
     }
 
     // ---- pointer ----

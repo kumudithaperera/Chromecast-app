@@ -50,6 +50,9 @@ interface ControlListener {
 
     /** The video in the TV browser changed, or went away (null). */
     fun onVideo(video: VideoState?) {}
+
+    /** The TV's ad blocking settings or counts changed. Never called by a TV app too old to send them. */
+    fun onAdBlock(state: AdBlockState) {}
     fun onFailure(failure: ClientFailure)
 }
 
@@ -153,6 +156,7 @@ class ControlClient(
                 val line = reader.readLine() ?: break
                 if (line.startsWith("STATE ")) parseState(line)?.let(listener::onState)
                 else if (line.startsWith("VIDEO ")) parseVideo(line)?.let { listener.onVideo(it.state) }
+                else if (line.startsWith("ADBLOCK ")) parseAdBlock(line)?.let(listener::onAdBlock)
             }
             fail(ClientFailure.Dropped)
         } catch (e: SocketTimeoutException) {

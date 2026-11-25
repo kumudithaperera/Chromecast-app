@@ -33,6 +33,11 @@ class WireTest {
             Command.Zoom(ZoomAction.IN),
             Command.Zoom(ZoomAction.RESET),
             Command.Ping,
+            Command.AdLevelSet(AdLevel.STRICT),
+            Command.AdOptionSet(AdOption.SCRIPTLETS, false),
+            Command.AdSite("bbc.co.uk", true),
+            Command.AdSite("192.168.1.10", false),
+            Command.AdUpdate,
         )
         for (c in all) assertEquals(c, parseCommand(formatCommand(c)))
     }
@@ -114,5 +119,32 @@ class WireTest {
         assertEquals(empty, parseState(formatState(empty)))
         val tilde = BrowserState(url = "https://a.test/~me", title = "~")
         assertEquals(tilde, parseState(formatState(tilde)))
+    }
+
+    @Test fun adBlockStateRoundTrips() {
+        val a = AdBlockState(
+            level = AdLevel.STRICT, hideElements = false, scriptlets = true, siteHelpers = false, rules = 172_422,
+            updatedAt = 1_795_000_000_000L, updateFailed = true, blockedOnPage = 38, site = "bbc.co.uk", siteAllowed = true,
+            allowedSites = listOf("bbc.co.uk", "example.com"),
+        )
+        assertEquals(a, parseAdBlock(formatAdBlock(a)))
+        assertEquals(AdBlockState(), parseAdBlock(formatAdBlock(AdBlockState())))
+        assertTrue(parseAdBlock(formatAdBlock(a.copy(updating = true, updateFailed = false)))!!.updating)
+    }
+
+    @Test fun adBlockLineFitsAndRejectsGarbage() {
+        val many = (1..2000).map { "site$it.example.com" }
+        val line = formatAdBlock(AdBlockState(allowedSites = many))
+        assertTrue(line.length < MAX_LINE)
+        assertTrue(parseAdBlock(line)!!.allowedSites.size in 100 until many.size)
+        assertNull(parseAdBlock("ADBLOCK LOUD 1 1 1 0 0 0 0 ~ 0 ~"))
+        assertNull(parseAdBlock("ADBLOCK STANDARD 1 1 1 0 0 0 0 ~ 0"))
+        assertNull(parseAdBlock("ADBLOCK STANDARD 1 1 1 x 0 0 0 ~ 0 ~"))
+        // A site that isn't a site name is refused, on the line and in a command.
+        assertNull(parseAdBlock("ADBLOCK STANDARD 1 1 1 0 0 0 0 %3Cscript%3E 0 ~"))
+        assertNull(parseCommand("AS 1 javascript%3Aalert(1)"))
+        assertNull(parseCommand("AS 2 example.com"))
+        assertNull(parseCommand("AO SCRIPTLETS"))
+        assertNull(parseCommand("AL MAX"))
     }
 }

@@ -257,6 +257,13 @@ class ControlServer(
         writer.execute { c.writeQuietly(line) }
     }
 
+    /** Pushes the ad blocking settings and counts to the authenticated phone, if there is one. */
+    fun sendAdBlock(state: AdBlockState) {
+        val c = synchronized(lock) { active } ?: return
+        val line = formatAdBlock(state)
+        writer.execute { c.writeQuietly(line) }
+    }
+
     /** Pushes the browser state to the authenticated phone, if there is one. */
     fun sendState(state: BrowserState) {
         val c = synchronized(lock) { active } ?: return

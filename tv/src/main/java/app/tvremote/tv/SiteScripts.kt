@@ -115,7 +115,9 @@ class SiteScripts(context: Context) {
   if (window.top !== window) return;
   var Z = __ZOOM__;
   var h = (location.hostname || '').toLowerCase().replace(/\.${'$'}/, '');
-  var s = (/^\d{1,3}(\.\d{1,3}){3}${'$'}/.test(h) || h.indexOf(':') >= 0) ? h : h.split('.').slice(-2).join('.');
+  var L = h.split('.');
+  var n = (L.length > 2 && L[L.length - 1].length === 2 && /^(ac|co|com|edu|gob|go|gov|ltd|mil|ne|net|nic|nom|or|org|plc|sch)${'$'}/.test(L[L.length - 2])) ? 3 : 2;
+  var s = (/^\d{1,3}(\.\d{1,3}){3}${'$'}/.test(h) || h.indexOf(':') >= 0) ? h : L.slice(-n).join('.');
   var z = Z[s];
   if (!z || z === 100) return;
   function apply() { var e = document.documentElement; if (e) e.style.zoom = String(z / 100); }
