@@ -256,6 +256,9 @@ private fun Controls(
 
     var speed by remember { mutableFloatStateOf(prefs.trackpadSpeed) }
     var menuOpen by remember { mutableStateOf(false) }
+    // Null while the TV hasn't sent its ad settings: an older TV app gets the old menu items.
+    val ads by link.ads.collectAsState()
+    var adsOpen by rememberSaveable { mutableStateOf(false) }
     var speedOpen by remember { mutableStateOf(false) }
     var keyboard by rememberSaveable { mutableStateOf(false) }
     // Quick note is offered on the Video tab; the tab stays put while the note sheet is up.
@@ -289,11 +292,12 @@ private fun Controls(
                     MenuItem("Zoom in (now ${page.zoom}%)") { link.send(Command.Zoom(ZoomAction.IN)) },
                     MenuItem("Zoom out") { link.send(Command.Zoom(ZoomAction.OUT)) },
                     if (page.zoom != 100) MenuItem("Reset zoom to 100%") { link.send(Command.Zoom(ZoomAction.RESET)) } else null,
-                    if (page.url.isNotEmpty()) {
+                    if (ads != null) MenuItem("Ad blocking…") { adsOpen = true } else null,
+                    if (ads == null && page.url.isNotEmpty()) {
                         MenuItem(if (page.adsAllowed) "Block ads on this site" else "Allow ads on this site") { link.send(Command.Nav(NavAction.ADS)) }
                     } else null,
-                    MenuItem(if (page.helpers) "Turn off site helpers" else "Turn on site helpers") { link.send(Command.Nav(NavAction.HELPERS)) },
-                    MenuItem("Stronger ad blocking on/off") { link.send(Command.Nav(NavAction.AD_LISTS)) },
+                    if (ads == null) MenuItem(if (page.helpers) "Turn off site helpers" else "Turn on site helpers") { link.send(Command.Nav(NavAction.HELPERS)) } else null,
+                    if (ads == null) MenuItem("Stronger ad blocking on/off") { link.send(Command.Nav(NavAction.AD_LISTS)) } else null,
                     MenuItem(if (page.desktop) "Use mobile sites" else "Use desktop sites") { link.send(Command.Desktop(!page.desktop)) },
                     MenuItem("Pointer speed") { speedOpen = true },
                 ),
@@ -341,6 +345,9 @@ private fun Controls(
             onDismiss = { noteOpen = false },
         )
     }
+
+    val adState = ads
+    if (adsOpen && adState != null) AdBlockSheet(adState, link::send) { adsOpen = false }
 
     if (speedOpen) {
         AlertDialog(

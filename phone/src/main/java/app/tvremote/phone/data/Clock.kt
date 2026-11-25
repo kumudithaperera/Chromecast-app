@@ -18,3 +18,16 @@ fun endsAtMillis(nowMillis: Long, position: Float, duration: Float, rate: Float)
     if (position < 0f || duration <= 0f || rate <= 0f || position > duration) return null
     return nowMillis + ((duration - position) / rate * 1000f).toLong()
 }
+
+/** How long ago [thenMillis] was, in words: "just now", "5 minutes ago", "2 days ago". 0 or less → "never". */
+fun formatAgo(thenMillis: Long, nowMillis: Long): String {
+    if (thenMillis <= 0L) return "never"
+    val minutes = (nowMillis - thenMillis).coerceAtLeast(0L) / 60_000L
+    fun n(v: Long, unit: String) = "$v $unit${if (v == 1L) "" else "s"} ago"
+    return when {
+        minutes < 1 -> "just now"
+        minutes < 60 -> n(minutes, "minute")
+        minutes < 24 * 60 -> n(minutes / 60, "hour")
+        else -> n(minutes / (24 * 60), "day")
+    }
+}

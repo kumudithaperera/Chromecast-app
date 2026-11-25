@@ -1,5 +1,6 @@
 package app.tvremote.phone.data
 
+import app.tvremote.protocol.AdBlockState
 import app.tvremote.protocol.BrowserState
 import app.tvremote.protocol.ClientFailure
 import app.tvremote.protocol.Command
@@ -34,6 +35,11 @@ class BrowserLink(private val prefs: Prefs) {
     /** The video playing in the TV browser, or null when there is none. */
     val video: StateFlow<VideoState?> = _video
 
+    private val _ads = MutableStateFlow<AdBlockState?>(null)
+
+    /** The TV's ad blocking settings; null until it sends them (a TV app too old never does). */
+    val ads: StateFlow<AdBlockState?> = _ads
+
     private var client: ControlClient? = null
     private var host: String? = null
 
@@ -61,6 +67,7 @@ class BrowserLink(private val prefs: Prefs) {
 
     private fun open(host: String, credential: Credential?, wrong: Boolean) {
         client?.close()
+        _ads.value = null
         this.host = host
         _state.value = LinkState.Connecting
         var pairing = false
@@ -90,6 +97,10 @@ class BrowserLink(private val prefs: Prefs) {
 
                 override fun onVideo(video: VideoState?) {
                     if (client === self) _video.value = video
+                }
+
+                override fun onAdBlock(state: AdBlockState) {
+                    if (client === self) _ads.value = state
                 }
 
                 override fun onFailure(failure: ClientFailure) {
@@ -152,6 +163,7 @@ class BrowserLink(private val prefs: Prefs) {
         client = null
         _browser.value = BrowserState()
         _video.value = null
+        _ads.value = null
         if (_state.value is LinkState.Ready || _state.value is LinkState.Connecting) _state.value = LinkState.Idle
     }
 }

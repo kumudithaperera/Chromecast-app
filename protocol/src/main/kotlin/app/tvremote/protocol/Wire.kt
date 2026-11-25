@@ -20,8 +20,29 @@ enum class NavAction {
     /** Turn the built-in site helpers (cookie banners, skip intro) off or on. */
     HELPERS,
 
-    /** Turn the downloaded public ad lists on or off (off by default: only the small built-in list blocks). */
+    /**
+     * Switch between the basic and the standard ad blocking level. From phone apps older than [Command.AdLevelSet];
+     * newer ones set the level directly.
+     */
     AD_LISTS,
+}
+
+/**
+ * How much the TV browser blocks. BASIC: a small built-in list of ad hosts. STANDARD: EasyList, EasyPrivacy
+ * and uBlock Origin's lists. STRICT: also HaGeZi's larger host list, which can stop some video players.
+ */
+enum class AdLevel { OFF, BASIC, STANDARD, STRICT }
+
+/** Ad blocking parts the phone can turn on and off. */
+enum class AdOption {
+    /** Hide the empty boxes and banners left on the page. */
+    HIDE_ELEMENTS,
+
+    /** Small scripts that stop pages from detecting the blocker or opening ad windows. */
+    SCRIPTLETS,
+
+    /** Press reject on cookie banners and "skip intro" on players. */
+    SITE_HELPERS,
 }
 enum class TabAction {
     NEW, NEXT, PREV, CLOSE,
@@ -66,6 +87,15 @@ sealed interface Command {
     /** [value] is seconds for SEEK (absolute) and SKIP (relative), the speed for RATE and the step for VOLUME. */
     data class Video(val action: VideoAction, val value: Float = 0f) : Command
 
+    data class AdLevelSet(val level: AdLevel) : Command
+    data class AdOptionSet(val option: AdOption, val on: Boolean) : Command
+
+    /** Allow ads on [site] (as `siteOf` gives it), or block them there again. */
+    data class AdSite(val site: String, val allowed: Boolean) : Command
+
+    /** Download the ad lists now instead of waiting for the weekly update. */
+    data object AdUpdate : Command
+
     data object Ping : Command
 }
 
@@ -108,6 +138,36 @@ data class VideoState(
 /** What a VIDEO line carries: a video, or null when there is none any more. */
 data class VideoUpdate(val state: VideoState?)
 
+/** TV → phone: the ad blocking settings and what they are doing. Sent on connect and after a change. */
+data class AdBlockState(
+    val level: AdLevel = AdLevel.STANDARD,
+    val hideElements: Boolean = true,
+    val scriptlets: Boolean = true,
+    val siteHelpers: Boolean = true,
+    /** Rules in use. */
+    val rules: Int = 0,
+    /** When the lists were last downloaded (milliseconds since 1970), 0 for never. */
+    val updatedAt: Long = 0L,
+    val updating: Boolean = false,
+    /** The last download failed; the lists in use are older ones or the built-in list. */
+    val updateFailed: Boolean = false,
+    /** Requests blocked on the page on screen. */
+    val blockedOnPage: Int = 0,
+    /** The site on screen (as `siteOf` gives it), "" for the start page. */
+    val site: String = "",
+    val siteAllowed: Boolean = false,
+    /** Sites where ads are allowed, at most as many as fit on one line. */
+    val allowedSites: List<String> = emptyList(),
+)
+
+private val SITE_NAME = Regex("^[a-z0-9-]+(\\.[a-z0-9-]+)+$")
+
+/** A site name as `siteOf` makes it: lowercase labels, or an IPv4 address. */
+fun isSiteName(s: String): Boolean = s.length <= 253 && SITE_NAME.matches(s)
+
+/** Room left on an ADBLOCK line for the allowed sites. */
+private const val MAX_SITES_FIELD = 3000
+
 private const val MAX_MOVE = 2000f
 private const val MAX_TEXT = 1000
 private const val MAX_URL_FIELD = 1500
@@ -149,6 +209,10 @@ fun formatCommand(c: Command): String = when (c) {
     is Command.Tab -> "B ${c.action.name}"
     is Command.Desktop -> "D ${if (c.on) 1 else 0}"
     is Command.Zoom -> "Z ${c.action.name}"
+    is Command.AdLevelSet -> "AL ${c.level.name}"
+    is Command.AdOptionSet -> "AO ${c.option.name} ${if (c.on) 1 else 0}"
+    is Command.AdSite -> "AS ${if (c.allowed) 1 else 0} ${enc(c.site)}"
+    Command.AdUpdate -> "AU"
     is Command.Video -> when (c.action) {
         VideoAction.RATE, VideoAction.VOLUME -> "V ${c.action.name} ${fmt2(c.value)}"
         VideoAction.SEEK, VideoAction.SKIP -> "V ${c.action.name} ${fmt(c.value)}"
@@ -199,8 +263,26 @@ fun parseCommand(line: String): Command? {
             }
         }
         "P" -> Command.Ping
+        "AL" -> Command.AdLevelSet(enumOrNull<AdLevel>(arg) ?: return null)
+        "AO" -> {
+            if (parts.size != 3) return null
+            Command.AdOptionSet(enumOrNull<AdOption>(arg) ?: return null, flagOf(parts[2]) ?: return null)
+        }
+        "AS" -> {
+            if (parts.size != 3) return null
+            val site = dec(parts[2]) ?: return null
+            if (!isSiteName(site)) return null
+            Command.AdSite(site, flagOf(arg ?: return null) ?: return null)
+        }
+        "AU" -> Command.AdUpdate
         else -> null
     }
+}
+
+private fun flagOf(s: String): Boolean? = when (s) {
+    "1" -> true
+    "0" -> false
+    else -> null
 }
 
 private inline fun <reified E : Enum<E>> enumOrNull(name: String?): E? =
@@ -257,5 +339,46 @@ fun parseVideo(line: String): VideoUpdate? {
             rate = (finiteFloat(p[5]) ?: return null).coerceIn(0.25f, 4f),
             fullscreen = flag(p[6]) ?: return null,
         ),
+    )
+}
+
+fun formatAdBlock(a: AdBlockState): String {
+    // As many allowed sites as fit; the rest stay on the TV.
+    val sites = StringBuilder()
+    for (site in a.allowedSites) {
+        if (!isSiteName(site)) continue
+        if (sites.length + site.length + 1 > MAX_SITES_FIELD) break
+        if (sites.isNotEmpty()) sites.append(',')
+        sites.append(site)
+    }
+    val status = when {
+        a.updating -> 1
+        a.updateFailed -> 2
+        else -> 0
+    }
+    return "ADBLOCK ${a.level.name} ${if (a.hideElements) 1 else 0} ${if (a.scriptlets) 1 else 0} ${if (a.siteHelpers) 1 else 0} " +
+        "${a.rules.coerceAtLeast(0)} ${a.updatedAt.coerceAtLeast(0)} $status ${a.blockedOnPage.coerceAtLeast(0)} " +
+        "${field(a.site.takeIf(::isSiteName).orEmpty())} ${if (a.siteAllowed) 1 else 0} ${field(sites.toString())}"
+}
+
+/** [line] must start with "ADBLOCK ". Returns null for anything malformed. */
+fun parseAdBlock(line: String): AdBlockState? {
+    val p = line.trim().split(' ')
+    if (p.size != 12 || p[0] != "ADBLOCK") return null
+    val site = unfield(p[9]) ?: return null
+    val sites = unfield(p[11]) ?: return null
+    return AdBlockState(
+        level = enumOrNull<AdLevel>(p[1]) ?: return null,
+        hideElements = flagOf(p[2]) ?: return null,
+        scriptlets = flagOf(p[3]) ?: return null,
+        siteHelpers = flagOf(p[4]) ?: return null,
+        rules = p[5].toIntOrNull()?.coerceIn(0, 10_000_000) ?: return null,
+        updatedAt = p[6].toLongOrNull()?.coerceAtLeast(0L) ?: return null,
+        updating = p[7] == "1",
+        updateFailed = p[7] == "2",
+        blockedOnPage = p[8].toIntOrNull()?.coerceIn(0, 1_000_000) ?: return null,
+        site = site.takeIf { it.isEmpty() || isSiteName(it) } ?: return null,
+        siteAllowed = flagOf(p[10]) ?: return null,
+        allowedSites = if (sites.isEmpty()) emptyList() else sites.split(',').filter(::isSiteName),
     )
 }

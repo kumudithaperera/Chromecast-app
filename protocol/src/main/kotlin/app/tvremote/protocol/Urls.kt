@@ -58,7 +58,7 @@ private fun search(q: String) = SEARCH_URL + URLEncoder.encode(q, "UTF-8")
  * 10 MB or more. Each domain is kept as a 64-bit hash in a sorted array instead (8 bytes each),
  * looked up with a binary search. Two different domains sharing a 64-bit hash is vanishingly unlikely.
  */
-class HostBlocklist private constructor(private val hashes: LongArray) {
+class HostBlocklist internal constructor(private val hashes: LongArray) {
     constructor(domains: Collection<String>) : this(hashAll(domains.asSequence()))
 
     /** Number of distinct domains in the list. */
@@ -81,7 +81,6 @@ class HostBlocklist private constructor(private val hashes: LongArray) {
         HostBlocklist((hashes + other.hashes).also { it.sort() }.distinctSorted())
 
     companion object {
-        private val DOMAIN = Regex("^[a-z0-9_]([a-z0-9_-]*[a-z0-9_])?(\\.[a-z0-9_]([a-z0-9_-]*[a-z0-9_])?)+$")
 
         /**
          * Reads plain domain lists, hosts files ("0.0.0.0 ads.example.com") and simple adblock rules
@@ -102,19 +101,22 @@ class HostBlocklist private constructor(private val hashes: LongArray) {
                 if (!line.endsWith("^")) return null
                 line = line.removeSuffix("^")
             } else {
-                val parts = line.split(Regex("\\s+"))
                 // Hosts file: an address, then the name.
-                line = if (parts.size >= 2) parts[1] else parts[0]
+                val gap = line.indexOfFirst { it.isWhitespace() }
+                if (gap >= 0) {
+                    val rest = line.substring(gap).trimStart()
+                    line = rest.substring(0, rest.indexOfFirst { it.isWhitespace() }.let { if (it < 0) rest.length else it })
+                }
             }
             line = line.lowercase().removePrefix("*.").trimEnd('.')
             if (line.length > 253 || line == "localhost" || line.endsWith(".localhost") || line == "local") return null
-            if (!DOMAIN.matches(line)) return null
+            if (!isDomainName(line)) return null
             // A bare IP address is not a domain to block by suffix.
             if (line.all { it.isDigit() || it == '.' }) return null
             return line
         }
 
-        private fun hashAll(domains: Sequence<String>): LongArray {
+        internal fun hashAll(domains: Sequence<String>): LongArray {
             val out = domains
                 .map { it.trim().lowercase().trimEnd('.') }
                 .filter { it.isNotEmpty() && !it.startsWith("#") }
@@ -125,7 +127,7 @@ class HostBlocklist private constructor(private val hashes: LongArray) {
             return out.distinctSorted()
         }
 
-        private fun LongArray.distinctSorted(): LongArray {
+        internal fun LongArray.distinctSorted(): LongArray {
             if (size < 2) return this
             var n = 1
             for (i in 1 until size) if (this[i] != this[n - 1]) this[n++] = this[i]
@@ -133,7 +135,7 @@ class HostBlocklist private constructor(private val hashes: LongArray) {
         }
 
         /** 64-bit FNV-1a over the characters. */
-        private fun hash(s: String): Long {
+        internal fun hash(s: String): Long {
             var h = -0x340d631b7bdddcdbL // 0xcbf29ce484222325
             for (c in s) {
                 h = h xor c.code.toLong()
@@ -144,10 +146,62 @@ class HostBlocklist private constructor(private val hashes: LongArray) {
     }
 }
 
-/** Last two labels, good enough to tell "same site" from "different site" for redirect blocking. */
+/**
+ * The registrable part of a host, to tell "same site" from "different site": the last two labels, or the
+ * last three under a country's second-level names ("bbc.co.uk", not "co.uk"). Not the full Public Suffix
+ * List, but it keeps one country's sites apart for third-party checks and per-site settings.
+ */
 fun siteOf(host: String?): String {
     val h = host?.lowercase()?.trimEnd('.') ?: return ""
-    if (IPV4.matches(h) || ':' in h) return h // IP literals are compared whole
+    if (isIpv4(h) || ':' in h) return h // IP literals are compared whole
     val labels = h.split('.')
-    return if (labels.size <= 2) labels.joinToString(".") else labels.takeLast(2).joinToString(".")
+    if (labels.size <= 2) return labels.joinToString(".")
+    val n = if (labels.last().length == 2 && labels[labels.size - 2] in SECOND_LEVEL) 3 else 2
+    return labels.takeLast(n).joinToString(".")
+}
+
+/** Second-level names countries register under ("co.uk", "com.au", "ne.jp"). */
+private val SECOND_LEVEL = setOf(
+    "ac", "co", "com", "edu", "gob", "go", "gov", "ltd", "mil", "ne", "net", "nic", "nom", "or", "org", "plc", "sch",
+)
+
+/**
+ * Lowercase labels of letters, digits, "_" and "-", not starting or ending with "-", at least two of them.
+ * Checked by hand: filter lists run to hundreds of thousands of lines, and regular expressions are slow on
+ * Android (the TV took 40 s to read the lists with them).
+ */
+internal fun isDomainName(s: String, strictHyphens: Boolean = true): Boolean {
+    if (s.isEmpty()) return false
+    var labelStart = 0
+    var labels = 0
+    for (i in 0..s.length) {
+        if (i == s.length || s[i] == '.') {
+            if (i == labelStart) return false
+            if (strictHyphens && (s[labelStart] == '-' || s[i - 1] == '-')) return false
+            labels++
+            labelStart = i + 1
+            continue
+        }
+        val c = s[i]
+        if (!(c in 'a'..'z' || c in '0'..'9' || c == '_' || c == '-')) return false
+    }
+    return labels >= 2
+}
+
+/** Four dot-separated groups of one to three digits. By hand: this runs for every request the TV makes. */
+internal fun isIpv4(s: String): Boolean {
+    var groups = 0
+    var digits = 0
+    for (c in s) {
+        when {
+            c in '0'..'9' -> if (++digits > 3) return false
+            c == '.' -> {
+                if (digits == 0) return false
+                groups++
+                digits = 0
+            }
+            else -> return false
+        }
+    }
+    return digits > 0 && groups == 3
 }
